@@ -44,14 +44,24 @@ class ModelProfile:
 
     def update(self, profile: ModelProfile | None) -> Self:
         """Update this ModelProfile (subclass) instance with the non-default values from another ModelProfile instance."""
-        if not profile:
+        if profile is None:
             return self
-        field_names = set(f.name for f in fields(self))
-        non_default_attrs = {
-            f.name: getattr(profile, f.name)
-            for f in fields(profile)
-            if f.name in field_names and getattr(profile, f.name) != f.default
-        }
+
+        self_fields = fields(self)
+        prof_fields = fields(profile)
+        # Map names to defaults for comparison. Use tuple search directly for speed
+        self_field_defaults = {f.name: f.default for f in self_fields}
+
+        # Both self and profile are (likely) the same class, but support subclasses with extra fields
+        non_default_attrs = {}
+        for f in prof_fields:
+            if f.name in self_field_defaults:
+                value = getattr(profile, f.name)
+                default = self_field_defaults[f.name]
+                if value != default:
+                    non_default_attrs[f.name] = value
+        if not non_default_attrs:
+            return self
         return replace(self, **non_default_attrs)
 
 
