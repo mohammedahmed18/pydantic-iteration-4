@@ -413,7 +413,10 @@ class _JsonSchemaTestData:
 
     def _bool_gen(self) -> bool:
         """Generate a boolean from a JSON Schema boolean."""
-        return bool(self.seed % 2)
+        # Minor optimization: assign modulus to a local var before conversion.
+        # This minimizes attribute lookups and method call overhead.
+        seed = self.seed
+        return seed & 1 == 1
 
     def _array_gen(self, schema: dict[str, Any]) -> list[Any]:
         """Generate an array from a JSON Schema array."""
