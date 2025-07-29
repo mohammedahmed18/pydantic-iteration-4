@@ -20,6 +20,7 @@ from ._utils import (
 )
 from .exceptions import UnexpectedModelBehavior
 from .usage import Usage
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from .models.instrumented import InstrumentationSettings
@@ -312,10 +313,7 @@ class DocumentUrl(FileUrl):
 
     def _infer_media_type(self) -> str:
         """Return the media type of the document, based on the url."""
-        type_, _ = guess_type(self.url)
-        if type_ is None:
-            raise ValueError(f'Unknown document file extension: {self.url}')
-        return type_
+        return self._guessed_mime(self.url)
 
     @property
     def format(self) -> DocumentFormat:
@@ -328,6 +326,14 @@ class DocumentUrl(FileUrl):
             return _document_format_lookup[media_type]
         except KeyError as e:
             raise ValueError(f'Unknown document media type: {media_type}') from e
+
+    @staticmethod
+    @lru_cache(maxsize=2048)
+    def _guessed_mime(url: str) -> str:
+        type_, _ = guess_type(url)
+        if type_ is None:
+            raise ValueError(f'Unknown document file extension: {url}')
+        return type_
 
 
 @dataclass(repr=False)
