@@ -413,7 +413,7 @@ class _JsonSchemaTestData:
 
     def _bool_gen(self) -> bool:
         """Generate a boolean from a JSON Schema boolean."""
-        return bool(self.seed % 2)
+        return (self.seed & 1) == 1  # optimized: bitwise, avoids modulo and bool()
 
     def _array_gen(self, schema: dict[str, Any]) -> list[Any]:
         """Generate an array from a JSON Schema array."""
