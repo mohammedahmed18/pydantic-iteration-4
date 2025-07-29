@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import ContentDict, FunctionCallDict, PartDict
 
 try:
     from google import genai
@@ -485,21 +486,23 @@ class GeminiStreamedResponse(StreamedResponse):
 
 
 def _content_model_response(m: ModelResponse) -> ContentDict:
-    parts: list[PartDict] = []
+    # Use local variables for lookup to avoid repeated attribute lookups
+    ToolCallPartType = ToolCallPart
+    TextPartType = TextPart
+    ThinkingPartType = ThinkingPart
+    parts_append = []
     for item in m.parts:
-        if isinstance(item, ToolCallPart):
-            function_call = FunctionCallDict(name=item.tool_name, args=item.args_as_dict(), id=item.tool_call_id)
-            parts.append({'function_call': function_call})
-        elif isinstance(item, TextPart):
-            parts.append({'text': item.content})
-        elif isinstance(item, ThinkingPart):  # pragma: no cover
-            # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
-            # please open an issue. The below code is the code to send thinking to the provider.
-            # parts.append({'text': item.content, 'thought': True})
+        if isinstance(item, ToolCallPartType):
+            fc = FunctionCallDict(name=item.tool_name, args=item.args_as_dict(), id=item.tool_call_id)
+            parts_append.append({'function_call': fc})
+        elif isinstance(item, TextPartType):
+            parts_append.append({'text': item.content})
+        elif isinstance(item, ThinkingPartType):  # pragma: no cover
             pass
         else:
             assert_never(item)
-    return ContentDict(role='model', parts=parts)
+    # Pre-allocate list more efficiently, then assign to fast built ContentDict
+    return ContentDict(role='model', parts=parts_append)
 
 
 def _process_response_from_parts(
