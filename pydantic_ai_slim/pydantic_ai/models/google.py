@@ -532,13 +532,11 @@ def _process_response_from_parts(
 
 
 def _function_declaration_from_tool(tool: ToolDefinition) -> FunctionDeclarationDict:
-    json_schema = tool.parameters_json_schema
-    f = FunctionDeclarationDict(
-        name=tool.name,
-        description=tool.description or '',
-        parameters=json_schema,  # type: ignore
-    )
-    return f
+    return {
+        'name': tool.name,
+        'description': tool.description or '',
+        'parameters': tool.parameters_json_schema,
+    }
 
 
 def _tool_config(function_names: list[str]) -> ToolConfigDict:
