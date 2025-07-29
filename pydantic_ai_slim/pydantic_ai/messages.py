@@ -160,25 +160,32 @@ class VideoUrl(FileUrl):
 
     def _infer_media_type(self) -> VideoMediaType:
         """Return the media type of the video, based on the url."""
-        if self.url.endswith('.mkv'):
-            return 'video/x-matroska'
-        elif self.url.endswith('.mov'):
-            return 'video/quicktime'
-        elif self.url.endswith('.mp4'):
-            return 'video/mp4'
-        elif self.url.endswith('.webm'):
-            return 'video/webm'
-        elif self.url.endswith('.flv'):
-            return 'video/x-flv'
-        elif self.url.endswith(('.mpeg', '.mpg')):
+        # Optimization: Avoid repeated calls to str.endswith by extracting the extension just once
+        url = self.url
+        # Find the position of the last dot after the last '/'
+        last_slash = url.rfind('/')
+        dot = url.rfind('.')
+        ext = ''
+        if dot != -1 and (last_slash == -1 or dot > last_slash):
+            ext = url[dot:]
+        # handle multi-dot extensions, e.g. .three_gp
+        if ext in {'.mkv', '.mov', '.mp4', '.webm', '.flv', '.wmv'}:
+            if ext == '.mkv':
+                return 'video/x-matroska'
+            if ext == '.mov':
+                return 'video/quicktime'
+            if ext == '.mp4':
+                return 'video/mp4'
+            if ext == '.webm':
+                return 'video/webm'
+            if ext == '.flv':
+                return 'video/x-flv'
+            if ext == '.wmv':
+                return 'video/x-ms-wmv'
+        elif ext in {'.mpeg', '.mpg'}:
             return 'video/mpeg'
-        elif self.url.endswith('.wmv'):
-            return 'video/x-ms-wmv'
-        elif self.url.endswith('.three_gp'):
+        elif ext == '.three_gp':
             return 'video/3gpp'
-        # Assume that YouTube videos are mp4 because there would be no extension
-        # to infer from. This should not be a problem, as Gemini disregards media
-        # type for YouTube URLs.
         elif self.is_youtube:
             return 'video/mp4'
         else:
