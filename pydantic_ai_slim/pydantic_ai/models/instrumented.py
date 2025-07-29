@@ -355,20 +355,24 @@ class InstrumentedModel(WrapperModel):
 
     @staticmethod
     def model_attributes(model: Model):
+        # Use direct dict creation to avoid unnecessary intermediate steps
         attributes: dict[str, AttributeValue] = {
             GEN_AI_SYSTEM_ATTRIBUTE: model.system,
             GEN_AI_REQUEST_MODEL_ATTRIBUTE: model.model_name,
         }
-        if base_url := model.base_url:
+        # Avoid extra assignments and rechecks; parse once and update only if needed
+        base_url = model.base_url
+        if base_url:
             try:
                 parsed = urlparse(base_url)
             except Exception:  # pragma: no cover
-                pass
-            else:
-                if parsed.hostname:  # pragma: no branch
-                    attributes['server.address'] = parsed.hostname
-                if parsed.port:  # pragma: no branch
-                    attributes['server.port'] = parsed.port
+                return attributes
+            hostname = parsed.hostname
+            if hostname is not None:  # pragma: no branch
+                attributes['server.address'] = hostname
+            port = parsed.port
+            if port is not None:  # pragma: no branch
+                attributes['server.port'] = port
 
         return attributes
 
