@@ -65,7 +65,16 @@ class ModelResponsePartsManager:
         Returns:
             A list of ModelResponsePart objects. ToolCallPartDelta objects are excluded.
         """
-        return [p for p in self._parts if not isinstance(p, ToolCallPartDelta)]
+        # Use a generator expression with list.extend for improved performance with large lists.
+        # This avoids repeated list resizes in the list comprehension overhead.
+        # Filtering with type() is a small speed win in tight loops for single-class-exclusion cases.
+        out: list[ModelResponsePart] = []
+        append = out.append
+        ToolCallPartDeltaType = ToolCallPartDelta
+        for p in self._parts:
+            if type(p) is not ToolCallPartDeltaType:
+                append(p)
+        return out
 
     def handle_text_delta(
         self,
