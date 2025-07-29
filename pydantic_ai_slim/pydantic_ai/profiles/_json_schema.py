@@ -161,13 +161,10 @@ class JsonSchemaTransformer(ABC):
         # TODO: Should we move this to relevant subclasses? Or is it worth keeping here to make reuse easier?
         if len(cases) == 2 and {'type': 'null'} in cases:
             # Find the non-null schema
-            non_null_schema = next(
-                (item for item in cases if item != {'type': 'null'}),
-                None,
-            )
-            if non_null_schema:
+            non_null_schema = cases[0] if cases[1] == {'type': 'null'} else cases[1]
+            if non_null_schema != {'type': 'null'}:
                 # Create a new schema based on the non-null part, mark as nullable
-                new_schema = deepcopy(non_null_schema)
+                new_schema = non_null_schema.copy()
                 new_schema['nullable'] = True
                 return [new_schema]
             else:  # pragma: no cover
