@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import ContentDict, FunctionCallDict, PartDict
 
 try:
     from google import genai
@@ -485,17 +486,28 @@ class GeminiStreamedResponse(StreamedResponse):
 
 
 def _content_model_response(m: ModelResponse) -> ContentDict:
-    parts: list[PartDict] = []
+    # Use locals for faster attribute access and tight loop
+    parts = []
+    append = parts.append
+    ToolCallPartType = ToolCallPart
+    TextPartType = TextPart
+    ThinkingPartType = ThinkingPart
+
     for item in m.parts:
-        if isinstance(item, ToolCallPart):
-            function_call = FunctionCallDict(name=item.tool_name, args=item.args_as_dict(), id=item.tool_call_id)
-            parts.append({'function_call': function_call})
-        elif isinstance(item, TextPart):
-            parts.append({'text': item.content})
-        elif isinstance(item, ThinkingPart):  # pragma: no cover
+        if isinstance(item, ToolCallPartType):
+            append({
+                'function_call': FunctionCallDict(
+                    name=item.tool_name,
+                    args=item.args_as_dict(),
+                    id=item.tool_call_id,
+                )
+            })
+        elif isinstance(item, TextPartType):
+            append({'text': item.content})
+        elif isinstance(item, ThinkingPartType):  # pragma: no cover
             # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
             # please open an issue. The below code is the code to send thinking to the provider.
-            # parts.append({'text': item.content, 'thought': True})
+            # append({'text': item.content, 'thought': True})
             pass
         else:
             assert_never(item)
