@@ -378,16 +378,18 @@ class OutputSchemaWithoutMode(BaseOutputSchema[OutputDataT]):
         self._toolset = toolset
 
     def with_default_mode(self, mode: StructuredOutputMode) -> OutputSchema[OutputDataT]:
+        # Localize frequently accessed attributes to reduce attribute lookup cost
+        processor = self.processor
+        allows_deferred_tool_calls = self.allows_deferred_tool_calls
+        toolset = self._toolset
+
         if mode == 'native':
-            return NativeOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
-            )
+            # Avoid keyword arguments allocation by positional passing (preserve order)
+            return NativeOutputSchema(processor, allows_deferred_tool_calls)
         elif mode == 'prompted':
-            return PromptedOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
-            )
+            return PromptedOutputSchema(processor, allows_deferred_tool_calls)
         elif mode == 'tool':
-            return ToolOutputSchema(toolset=self.toolset, allows_deferred_tool_calls=self.allows_deferred_tool_calls)
+            return ToolOutputSchema(toolset, allows_deferred_tool_calls)
         else:
             assert_never(mode)
 
