@@ -1,6 +1,5 @@
 from __future__ import annotations as _annotations
 
-import re
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ class JsonSchemaTransformer(ABC):
 
     def __init__(
         self,
-        schema: JsonSchema,
+        schema: "JsonSchema",
         *,
         strict: bool | None = None,
         prefer_inlined_defs: bool = False,
@@ -30,14 +29,14 @@ class JsonSchemaTransformer(ABC):
         self.schema = schema
 
         self.strict = strict
-        self.is_strict_compatible = True  # Can be set to False by subclasses to set `strict` on `ToolDefinition` when set not set by user explicitly
+        self.is_strict_compatible = True
 
         self.prefer_inlined_defs = prefer_inlined_defs
         self.simplify_nullable_unions = simplify_nullable_unions
 
-        self.defs: dict[str, JsonSchema] = self.schema.get('$defs', {})
+        self.defs: dict[str, "JsonSchema"] = self.schema.get('$defs', {})
         self.refs_stack: list[str] = []
-        self.recursive_refs = set[str]()
+        self.recursive_refs = set()
 
     @abstractmethod
     def transform(self, schema: JsonSchema) -> JsonSchema:
@@ -45,41 +44,49 @@ class JsonSchemaTransformer(ABC):
         return schema
 
     def walk(self) -> JsonSchema:
-        schema = deepcopy(self.schema)
+        # Only make shallow copy unless we're going to mutate 'schema'
+        schema = dict(self.schema)
+        defs = self.defs
 
-        # First, handle everything but $defs:
-        schema.pop('$defs', None)
+        # Remove $defs for main handling; we handle it specially below
+        if '$defs' in schema: del schema['$defs']
         handled = self._handle(schema)
 
-        if not self.prefer_inlined_defs and self.defs:
-            handled['$defs'] = {k: self._handle(v) for k, v in self.defs.items()}
-
+        if not self.prefer_inlined_defs and defs:
+            # Faster dict comprehension
+            handled['$defs'] = {k: self._handle(v) for k, v in defs.items()}
         elif self.recursive_refs:  # pragma: no cover
-            # If we are preferring inlined defs and there are recursive refs, we _have_ to use a $defs+$ref structure
-            # We try to use whatever the original root key was, but if it is already in use,
-            # we modify it to avoid collisions.
-            defs = {key: self.defs[key] for key in self.recursive_refs}
+            # Build $defs for recursive refs only
+            defs_subset = {k: defs[k] for k in self.recursive_refs}
             root_ref = self.schema.get('$ref')
-            root_key = None if root_ref is None else re.sub(r'^#/\$defs/', '', root_ref)
-            if root_key is None:
+            if root_ref is not None and root_ref.startswith('#/$defs/'):
+                root_key = root_ref[8:]
+            else:
                 root_key = self.schema.get('title', 'root')
-                while root_key in defs:
-                    # Modify the root key until it is not already in use
+                while root_key in defs_subset:
                     root_key = f'{root_key}_root'
-
-            defs[root_key] = handled
-            return {'$defs': defs, '$ref': f'#/$defs/{root_key}'}
+            defs_subset[root_key] = handled
+            # Don't copy dict here; handled is already handled
+            return {'$defs': defs_subset, '$ref': f'#/$defs/{root_key}'}
 
         return handled
 
     def _handle(self, schema: JsonSchema) -> JsonSchema:
         nested_refs = 0
         if self.prefer_inlined_defs:
-            while ref := schema.get('$ref'):
-                key = re.sub(r'^#/\$defs/', '', ref)
+            # Inline $ref resolution
+            while True:
+                ref = schema.get('$ref')
+                if not ref:
+                    break
+                # Slicing instead of regex
+                if ref.startswith('#/$defs/'):
+                    key = ref[8:]
+                else:
+                    key = ref
                 if key in self.refs_stack:
                     self.recursive_refs.add(key)
-                    break  # recursive ref can't be unpacked
+                    break
                 self.refs_stack.append(key)
                 nested_refs += 1
 
@@ -89,14 +96,17 @@ class JsonSchemaTransformer(ABC):
                 schema = def_schema
 
         # Handle the schema based on its type / structure
-        type_ = schema.get('type')
-        if type_ == 'object':
+        typ = schema.get('type')
+        if typ == 'object':
             schema = self._handle_object(schema)
-        elif type_ == 'array':
+        elif typ == 'array':
             schema = self._handle_array(schema)
-        elif type_ is None:
-            schema = self._handle_union(schema, 'anyOf')
-            schema = self._handle_union(schema, 'oneOf')
+        elif typ is None:
+            # Only call these if relevant keys exist (avoids function calls)
+            if 'anyOf' in schema:
+                schema = self._handle_union(schema, 'anyOf')
+            if 'oneOf' in schema:
+                schema = self._handle_union(schema, 'oneOf')
 
         # Apply the base transform
         schema = self.transform(schema)
