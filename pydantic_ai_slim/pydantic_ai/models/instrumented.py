@@ -374,13 +374,26 @@ class InstrumentedModel(WrapperModel):
 
     @staticmethod
     def event_to_dict(event: Event) -> dict[str, Any]:
-        if not event.body:
-            body = {}  # pragma: no cover
-        elif isinstance(event.body, Mapping):
-            body = event.body  # type: ignore
+        # Optimize common case: event.body is None/empty and event.attributes is None/empty
+        attrs = event.attributes
+        body = event.body
+        if not body:
+            if not attrs:
+                return {}
+            return dict(attrs)
+        elif isinstance(body, Mapping):
+            if not attrs:
+                return dict(body)
+            # In the worst case we must merge both dicts
+            result = dict(body)
+            result.update(attrs)
+            return result
         else:
-            body = {'body': event.body}
-        return {**body, **(event.attributes or {})}
+            if not attrs:
+                return {'body': body}
+            result = {'body': body}
+            result.update(attrs)
+            return result
 
     @staticmethod
     def serialize_any(value: Any) -> str:
