@@ -77,11 +77,8 @@ def doc_descriptions(
 
 def _infer_docstring_style(doc: str) -> DocstringStyle:
     """Simplistic docstring style inference."""
-    for pattern, replacements, style in _docstring_style_patterns:
-        matches = (
-            re.search(pattern.format(replacement), doc, re.IGNORECASE | re.MULTILINE) for replacement in replacements
-        )
-        if any(matches):
+    for compiled_regex, style in _COMPILED_DOCSTRING_PATTERNS:
+        if compiled_regex.search(doc):
             return style
     # fallback to google style
     return 'google'
@@ -171,3 +168,18 @@ def _disable_griffe_logging():
     logging.root.setLevel(logging.ERROR)
     yield
     logging.root.setLevel(old_level)
+
+
+# Precompile the patterns with all replacements as alternations for speed.
+def _compile_docstring_style_patterns():
+    compiled = []
+    for pattern, replacements, style in _docstring_style_patterns:
+        # Escape and join replacements for use in alternation group
+        replacements_re = '|'.join(map(re.escape, replacements))
+        # substitute '{0}' in pattern with grouped alternation
+        full_pattern = pattern.format(f'(?:{replacements_re})')
+        compiled_regex = re.compile(full_pattern, re.IGNORECASE | re.MULTILINE)
+        compiled.append((compiled_regex, style))
+    return compiled
+
+_COMPILED_DOCSTRING_PATTERNS = _compile_docstring_style_patterns()
