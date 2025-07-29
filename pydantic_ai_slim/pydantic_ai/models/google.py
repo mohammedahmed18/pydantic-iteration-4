@@ -19,7 +19,6 @@ from ..messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    ModelResponsePart,
     ModelResponseStreamEvent,
     RetryPromptPart,
     SystemPromptPart,
@@ -42,6 +41,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import Part
 
 try:
     from google import genai
@@ -509,25 +509,42 @@ def _process_response_from_parts(
     vendor_id: str | None,
     vendor_details: dict[str, Any] | None = None,
 ) -> ModelResponse:
-    items: list[ModelResponsePart] = []
+    items_append = [].append  # localize method for performance
     for part in parts:
-        if part.text is not None:
+        text = part.text
+        if text is not None:
+            # Most common path: prefer direct instantiation, localize append
             if part.thought:
-                items.append(ThinkingPart(content=part.text))
+                items_append(ThinkingPart(content=text))
             else:
-                items.append(TextPart(content=part.text))
-        elif part.function_call:
-            assert part.function_call.name is not None
-            tool_call_part = ToolCallPart(tool_name=part.function_call.name, args=part.function_call.args)
-            if part.function_call.id is not None:
-                tool_call_part.tool_call_id = part.function_call.id  # pragma: no cover
-            items.append(tool_call_part)
-        elif part.function_response:  # pragma: no cover
+                items_append(TextPart(content=text))
+            continue
+
+        function_call = part.function_call
+        if function_call:
+            name = function_call.name  # local
+            assert name is not None
+            args = function_call.args
+            # Pass tool_call_id in the constructor if present
+            tool_call_id = getattr(function_call, "id", None)
+            if tool_call_id is not None:
+                items_append(ToolCallPart(tool_name=name, args=args, tool_call_id=tool_call_id))
+            else:
+                items_append(ToolCallPart(tool_name=name, args=args))
+            continue
+
+        if part.function_response:  # pragma: no cover
             raise UnexpectedModelBehavior(
                 f'Unsupported response from Gemini, expected all parts to be function calls or text, got: {part!r}'
             )
+
+    # Use list() to convert the append method back to a list for ModelResponse constructor
     return ModelResponse(
-        parts=items, model_name=model_name, usage=usage, vendor_id=vendor_id, vendor_details=vendor_details
+        parts=list(items_append.__self__),
+        model_name=model_name,
+        usage=usage,
+        vendor_id=vendor_id,
+        vendor_details=vendor_details
     )
 
 
