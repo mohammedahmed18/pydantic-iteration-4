@@ -355,21 +355,26 @@ class InstrumentedModel(WrapperModel):
 
     @staticmethod
     def model_attributes(model: Model):
+        # Pre-allocate attributes with static keys
         attributes: dict[str, AttributeValue] = {
             GEN_AI_SYSTEM_ATTRIBUTE: model.system,
             GEN_AI_REQUEST_MODEL_ATTRIBUTE: model.model_name,
         }
-        if base_url := model.base_url:
+        base_url = model.base_url
+        if base_url:
+            # urlparse doesn't raise for normal strings; catch ValueError only.
             try:
                 parsed = urlparse(base_url)
-            except Exception:  # pragma: no cover
+            except ValueError:  # pragma: no cover
                 pass
             else:
-                if parsed.hostname:  # pragma: no branch
-                    attributes['server.address'] = parsed.hostname
-                if parsed.port:  # pragma: no branch
-                    attributes['server.port'] = parsed.port
-
+                # Direct dict assignment reduces hasattr/lookup overhead
+                hostname = parsed.hostname
+                if hostname:  # pragma: no branch
+                    attributes['server.address'] = hostname
+                port = parsed.port
+                if port:  # pragma: no branch
+                    attributes['server.port'] = port
         return attributes
 
     @staticmethod
