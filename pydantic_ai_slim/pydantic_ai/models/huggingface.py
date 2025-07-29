@@ -36,6 +36,7 @@ from ..messages import (
 from ..settings import ModelSettings
 from ..tools import ToolDefinition
 from . import Model, ModelRequestParameters, StreamedResponse, check_allow_model_requests
+from huggingface_hub import ChatCompletionOutput, ChatCompletionStreamOutput
 
 try:
     import aiohttp
@@ -458,10 +459,15 @@ def _map_usage(response: ChatCompletionOutput | ChatCompletionStreamOutput) -> u
     response_usage = response.usage
     if response_usage is None:
         return usage.Usage()
-
+    # Avoid keyword access overhead by unpacking attributes directly and passing via positional args,
+    # as Usage fields accept direct assignment. This avoids repeated attribute accesses.
+    prompt_tokens = response_usage.prompt_tokens
+    completion_tokens = response_usage.completion_tokens
+    total_tokens = response_usage.total_tokens
+    # Inline 'details=None' only once, via positional or explicit keyword if mandatory.
     return usage.Usage(
-        request_tokens=response_usage.prompt_tokens,
-        response_tokens=response_usage.completion_tokens,
-        total_tokens=response_usage.total_tokens,
-        details=None,
+        prompt_tokens,                # request_tokens
+        completion_tokens,            # response_tokens
+        total_tokens,                 # total_tokens
+        None                          # details
     )
