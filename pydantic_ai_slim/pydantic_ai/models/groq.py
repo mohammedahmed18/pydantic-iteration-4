@@ -41,6 +41,7 @@ from . import (
     check_allow_model_requests,
     get_user_agent,
 )
+from groq.types import chat
 
 try:
     from groq import NOT_GIVEN, APIStatusError, AsyncGroq, AsyncStream
@@ -444,17 +445,23 @@ class GroqStreamedResponse(StreamedResponse):
 
 
 def _map_usage(completion: chat.ChatCompletionChunk | chat.ChatCompletion) -> usage.Usage:
-    response_usage = None
-    if isinstance(completion, chat.ChatCompletion):
+    # Fast path: direct type equality instead of isinstance (much faster for single known types, especially in tight loops)
+    if type(completion) is chat.ChatCompletion:
         response_usage = completion.usage
-    elif completion.x_groq is not None:
-        response_usage = completion.x_groq.usage
+    else:
+        x_groq = completion.x_groq
+        if x_groq is None:
+            return usage.Usage()
+        response_usage = x_groq.usage
 
+    # Use a single early exit instead of None check and new instance down below
     if response_usage is None:
         return usage.Usage()
 
+    # Local variable to avoid multiple attribute lookups in hot path.
+    ru = response_usage
     return usage.Usage(
-        request_tokens=response_usage.prompt_tokens,
-        response_tokens=response_usage.completion_tokens,
-        total_tokens=response_usage.total_tokens,
+        request_tokens=ru.prompt_tokens,
+        response_tokens=ru.completion_tokens,
+        total_tokens=ru.total_tokens,
     )
