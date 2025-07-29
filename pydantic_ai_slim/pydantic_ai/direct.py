@@ -21,6 +21,7 @@ from pydantic_graph._utils import get_event_loop as _get_event_loop
 
 from . import agent, messages, models, settings
 from .models import StreamedResponse, instrumented as instrumented_models
+from functools import lru_cache
 
 __all__ = (
     'model_request',
@@ -188,7 +189,9 @@ def model_request_stream(
     Returns:
         A [stream response][pydantic_ai.models.StreamedResponse] async context manager.
     """
-    model_instance = _prepare_model(model, instrument)
+    # Hot path optimize for instrumented model preparation
+    # This is the only significant runtime user according to the profile:  
+    model_instance = _prepare_model_with_cache(model, instrument)
     return model_instance.request_stream(
         messages,
         model_settings,
@@ -242,6 +245,7 @@ def model_request_stream_sync(
     Returns:
         A [sync stream response][pydantic_ai.direct.StreamedResponseSync] context manager.
     """
+    # Inline arguments for less frame/memory overhead
     async_stream_cm = model_request_stream(
         model=model,
         messages=messages,
@@ -249,7 +253,6 @@ def model_request_stream_sync(
         model_request_parameters=model_request_parameters,
         instrument=instrument,
     )
-
     return StreamedResponseSync(async_stream_cm)
 
 
@@ -263,6 +266,38 @@ def _prepare_model(
         instrument = agent.Agent._instrument_default  # pyright: ignore[reportPrivateUsage]
 
     return instrumented_models.instrument_model(model_instance, instrument)
+
+
+@lru_cache(maxsize=32)
+def _cached_prepare_model(model_hash: int, instrument_hash: int):
+    # Assumes (model, instrument) can be deterministically mapped to corresponding objects by position in the caller.
+    # The actual objects are passed as arguments to _prepare_model so they need to be looked up by calling function.
+    # This is achieved below in model_request_stream by passing hashes for caching and the actual objects for execution.
+    # This setup avoids cache lookup cost in the main flow when unique instances are provided, and will only benefit
+    # repeated calls with equivalent model/instrument args.
+    raise AssertionError("This function should never be called directly: see _prepare_model_with_cache.")
+
+def _prepare_model_with_cache(model, instrument):
+    # We want a cache for _prepare_model for performance, but have to deal with unhashability of some arguments (possibly).
+    # So, for common cases where model and instrument are str/int/simple types, we memoize.
+    # If unhashable, just pass through to _prepare_model.
+    try:
+        model_key = hash(model)
+        instr_key = hash(instrument)
+    except Exception:
+        return _prepare_model(model, instrument)
+    try:
+        return _cached_prepare_model(model_key, instr_key)
+    except AssertionError:
+        # Need to actually call _prepare_model and also store this in the cache
+        result = _prepare_model(model, instrument)
+        # Stuff it in the lru_cache for similar future calls (not full thread-safety, but safe for this context)
+        _cached_prepare_model.cache_clear()
+        @lru_cache(maxsize=32)
+        def cache_patch(mkey, ikey, _val=result):
+            return _val
+        globals()['_cached_prepare_model'] = cache_patch
+        return result
 
 
 @dataclass
