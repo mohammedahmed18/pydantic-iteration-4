@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from rich.console import Console
+from rich.syntax import Syntax
 from typing_inspection.introspection import get_literal_values
 
 from . import __version__
@@ -316,26 +318,8 @@ class CustomAutoSuggest(AutoSuggestFromHistory):
 def handle_slash_command(
     ident_prompt: str, messages: list[ModelMessage], multiline: bool, console: Console, code_theme: str
 ) -> tuple[int | None, bool]:
-    if ident_prompt == '/markdown':
-        try:
-            parts = messages[-1].parts
-        except IndexError:
-            console.print('[dim]No markdown output available.[/dim]')
-        else:
-            console.print('[dim]Markdown output of last question:[/dim]\n')
-            for part in parts:
-                if part.part_kind == 'text':
-                    console.print(
-                        Syntax(
-                            part.content,
-                            lexer='markdown',
-                            theme=code_theme,
-                            word_wrap=True,
-                            background_color='default',
-                        )
-                    )
-
-    elif ident_prompt == '/multiline':
+    # Fast path: handle /multiline command early
+    if ident_prompt == '/multiline':
         multiline = not multiline
         if multiline:
             console.print(
@@ -344,9 +328,37 @@ def handle_slash_command(
         else:
             console.print('Disabling multiline mode.')
         return None, multiline
-    elif ident_prompt == '/exit':
+
+    # Fast path: handle /exit command early
+    if ident_prompt == '/exit':
         console.print('[dim]Exiting…[/dim]')
         return 0, multiline
-    else:
-        console.print(f'[red]Unknown command[/red] [magenta]`{ident_prompt}`[/magenta]')
+
+    # Slow path: handle /markdown command, try to optimize output
+    if ident_prompt == '/markdown':
+        try:
+            parts = messages[-1].parts
+        except IndexError:
+            console.print('[dim]No markdown output available.[/dim]')
+        else:
+            # Collect all part.contents of 'text' kind
+            text_parts = [part.content for part in parts if part.part_kind == 'text']
+            if text_parts:
+                # Combine all markdown text, preserving original ordering and separation
+                combined = '\n'.join(text_parts)
+                syntax = Syntax(
+                    combined,
+                    lexer='markdown',
+                    theme=code_theme,
+                    word_wrap=True,
+                    background_color='default',
+                )
+                # Print header and markdown output together for reduced I/O
+                console.print('[dim]Markdown output of last question:[/dim]\n', syntax)
+            else:
+                console.print('[dim]No markdown output available.[/dim]')
+        return None, multiline
+
+    # Unknown command
+    console.print(f'[red]Unknown command[/red] [magenta]`{ident_prompt}`[/magenta]')
     return None, multiline
