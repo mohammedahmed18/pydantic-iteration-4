@@ -40,7 +40,8 @@ class ModelProfile:
         """Build a ModelProfile subclass instance from a ModelProfile instance."""
         if isinstance(profile, cls):
             return profile
-        return cls().update(profile)
+        # Only create a new instance if strictly required (profile is not None), and then update.
+        return cls().update(profile) if profile else cls()
 
     def update(self, profile: ModelProfile | None) -> Self:
         """Update this ModelProfile (subclass) instance with the non-default values from another ModelProfile instance."""
