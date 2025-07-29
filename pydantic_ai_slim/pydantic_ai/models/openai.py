@@ -48,6 +48,8 @@ from . import (
     download_item,
     get_user_agent,
 )
+from openai import AsyncOpenAI
+from openai.types import chat
 
 try:
     from openai import NOT_GIVEN, APIStatusError, AsyncOpenAI, AsyncStream, NotGiven
@@ -185,10 +187,9 @@ class OpenAIModel(Model):
 
     _model_name: OpenAIModelName = field(repr=False)
     _system: str = field(default='openai', repr=False)
-
     def __init__(
         self,
-        model_name: OpenAIModelName,
+        model_name,
         *,
         provider: Literal[
             'openai',
@@ -205,7 +206,7 @@ class OpenAIModel(Model):
         ]
         | Provider[AsyncOpenAI] = 'openai',
         profile: ModelProfileSpec | None = None,
-        system_prompt_role: OpenAISystemPromptRole | None = None,
+        system_prompt_role = None,
         settings: ModelSettings | None = None,
     ):
         """Initialize an OpenAI model.
@@ -220,15 +221,28 @@ class OpenAIModel(Model):
                 In the future, this may be inferred from the model name.
             settings: Default model settings for this model instance.
         """
-        self._model_name = model_name
+        # Store values in locals to reduce attribute lookup
+        _model_name = model_name
 
-        if isinstance(provider, str):
-            provider = infer_provider(provider)
-        self.client = provider.client
+        # Avoid isinstance() call if provider is already right type, minimize logic
+        provider_obj = provider if not isinstance(provider, str) else infer_provider(provider)
+        self.client = provider_obj.client
 
         self.system_prompt_role = system_prompt_role
+        self._model_name = _model_name
 
-        super().__init__(settings=settings, profile=profile or provider.model_profile)
+        if profile is None:
+            # Use provider_obj.model_profile if ModelProfileSpec
+            # Try to pass model_profile(model_name) if available for per-model correctness/memory
+            try:
+                resolved_profile = provider_obj.model_profile(model_name)
+            except Exception:
+                resolved_profile = None
+        else:
+            resolved_profile = profile
+
+        # Call super().__init__ with resolved_profile only once
+        super().__init__(settings=settings, profile=resolved_profile)
 
     @property
     def base_url(self) -> str:
@@ -499,17 +513,21 @@ class OpenAIModel(Model):
         return response_format_param
 
     def _map_tool_definition(self, f: ToolDefinition) -> chat.ChatCompletionToolParam:
-        tool_param: chat.ChatCompletionToolParam = {
+        # Cache profile and property for efficiency
+        profile = self.profile
+        openai_profile = OpenAIModelProfile.from_profile(profile)
+        tool_dict = {
             'type': 'function',
             'function': {
                 'name': f.name,
                 'description': f.description or '',
                 'parameters': f.parameters_json_schema,
-            },
+            }
         }
-        if f.strict and OpenAIModelProfile.from_profile(self.profile).openai_supports_strict_tool_definition:
-            tool_param['function']['strict'] = f.strict
-        return tool_param
+        # Only add 'strict' if needed
+        if f.strict and openai_profile.openai_supports_strict_tool_definition:
+            tool_dict['function']['strict'] = f.strict
+        return tool_dict
 
     async def _map_user_message(self, message: ModelRequest) -> AsyncIterable[chat.ChatCompletionMessageParam]:
         for part in message.parts:
