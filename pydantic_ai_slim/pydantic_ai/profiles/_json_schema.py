@@ -21,7 +21,7 @@ class JsonSchemaTransformer(ABC):
 
     def __init__(
         self,
-        schema: JsonSchema,
+        schema: 'JsonSchema',
         *,
         strict: bool | None = None,
         prefer_inlined_defs: bool = False,
@@ -35,7 +35,7 @@ class JsonSchemaTransformer(ABC):
         self.prefer_inlined_defs = prefer_inlined_defs
         self.simplify_nullable_unions = simplify_nullable_unions
 
-        self.defs: dict[str, JsonSchema] = self.schema.get('$defs', {})
+        self.defs: dict[str, 'JsonSchema'] = self.schema.get('$defs', {})
         self.refs_stack: list[str] = []
         self.recursive_refs = set[str]()
 
@@ -75,18 +75,25 @@ class JsonSchemaTransformer(ABC):
     def _handle(self, schema: JsonSchema) -> JsonSchema:
         nested_refs = 0
         if self.prefer_inlined_defs:
-            while ref := schema.get('$ref'):
-                key = re.sub(r'^#/\$defs/', '', ref)
-                if key in self.refs_stack:
-                    self.recursive_refs.add(key)
+            ref_get = schema.get
+            refs_stack = self.refs_stack
+            recursive_refs = self.recursive_refs
+            defs = self.defs
+            re_sub = re.sub
+            append = refs_stack.append
+            while (ref := ref_get('$ref')):
+                key = re_sub(r'^#/\$defs/', '', ref)
+                if key in refs_stack:
+                    recursive_refs.add(key)
                     break  # recursive ref can't be unpacked
-                self.refs_stack.append(key)
+                append(key)
                 nested_refs += 1
 
-                def_schema = self.defs.get(key)
+                def_schema = defs.get(key)
                 if def_schema is None:  # pragma: no cover
                     raise UserError(f'Could not find $ref definition for {key}')
                 schema = def_schema
+                ref_get = schema.get
 
         # Handle the schema based on its type / structure
         type_ = schema.get('type')
@@ -102,25 +109,24 @@ class JsonSchemaTransformer(ABC):
         schema = self.transform(schema)
 
         if nested_refs > 0:
-            self.refs_stack = self.refs_stack[:-nested_refs]
+            del self.refs_stack[-nested_refs:]
 
         return schema
 
     def _handle_object(self, schema: JsonSchema) -> JsonSchema:
-        if properties := schema.get('properties'):
-            handled_properties = {}
+        if (properties := schema.get('properties')):
+            # optimize by in-place update if possible
+            handled_properties = schema['properties'] if isinstance(schema['properties'], dict) else {}
             for key, value in properties.items():
                 handled_properties[key] = self._handle(value)
             schema['properties'] = handled_properties
 
         if (additional_properties := schema.get('additionalProperties')) is not None:
-            if isinstance(additional_properties, bool):
-                schema['additionalProperties'] = additional_properties
-            else:
+            if not isinstance(additional_properties, bool):
                 schema['additionalProperties'] = self._handle(additional_properties)
 
         if (pattern_properties := schema.get('patternProperties')) is not None:
-            handled_pattern_properties = {}
+            handled_pattern_properties = schema['patternProperties'] if isinstance(schema['patternProperties'], dict) else {}
             for key, value in pattern_properties.items():
                 handled_pattern_properties[key] = self._handle(value)
             schema['patternProperties'] = handled_pattern_properties
