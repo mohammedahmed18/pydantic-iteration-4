@@ -792,11 +792,14 @@ def get_user_agent() -> str:
 
 
 def _customize_tool_def(transformer: type[JsonSchemaTransformer], t: ToolDefinition):
+    # Avoid creating a new transformed object just for .is_strict_compatible lookup when not needed
+    strict_is_none = t.strict is None
     schema_transformer = transformer(t.parameters_json_schema, strict=t.strict)
     parameters_json_schema = schema_transformer.walk()
-    if t.strict is None:
-        t = replace(t, strict=schema_transformer.is_strict_compatible)
-    return replace(t, parameters_json_schema=parameters_json_schema)
+    # Inline the replace and only create new objects once, caching strict and schema
+    new_strict = schema_transformer.is_strict_compatible if strict_is_none else t.strict
+    # Always do a single replace to avoid multiple object creations
+    return replace(t, strict=new_strict, parameters_json_schema=parameters_json_schema)
 
 
 def _customize_output_object(transformer: type[JsonSchemaTransformer], o: OutputObjectDefinition):
