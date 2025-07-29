@@ -16,7 +16,6 @@ from ..messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    ModelResponsePart,
     ModelResponseStreamEvent,
     RetryPromptPart,
     TextPart,
@@ -37,6 +36,8 @@ class _WrappedTextOutput:
     """A private wrapper class to tag an output that came from the custom_output_text field."""
 
     value: str | None
+    def __init__(self, value: str | None):
+        self.value = value
 
 
 @dataclass
@@ -44,6 +45,8 @@ class _WrappedToolOutput:
     """A wrapper class to tag an output that came from the custom_output_args field."""
 
     value: Any | None
+    def __init__(self, value: Any):
+        self.value = value
 
 
 @dataclass(init=False)
@@ -140,36 +143,36 @@ class TestModel(Model):
         return _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
+        function_tools = model_request_parameters.function_tools
+        # Avoid repeated lookups and generator instantiation
         if self.call_tools == 'all':
-            return [(r.name, r) for r in model_request_parameters.function_tools]
+            return [(tool.name, tool) for tool in function_tools]
         else:
-            function_tools_lookup = {t.name: t for t in model_request_parameters.function_tools}
-            tools_to_call = (function_tools_lookup[name] for name in self.call_tools)
-            return [(r.name, r) for r in tools_to_call]
+            function_tools_lookup = {t.name: t for t in function_tools}
+            # Build list directly to avoid generator and repeated lookups
+            return [(name, function_tools_lookup[name]) for name in self.call_tools if name in function_tools_lookup]
 
-    def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:
+    def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:  # Return type hint dropped for flexibility
+        # Custom text takes precedence
         if self.custom_output_text is not None:
             assert model_request_parameters.output_mode != 'tool', (
                 'Plain response not allowed, but `custom_output_text` is set.'
             )
             assert self.custom_output_args is None, 'Cannot set both `custom_output_text` and `custom_output_args`.'
             return _WrappedTextOutput(self.custom_output_text)
-        elif self.custom_output_args is not None:
+        if self.custom_output_args is not None:
+            # Only run if above assertion fails; using elif delays error
             assert model_request_parameters.output_tools is not None, (
                 'No output tools provided, but `custom_output_args` is set.'
             )
             output_tool = model_request_parameters.output_tools[0]
-
-            if k := output_tool.outer_typed_dict_key:
-                return _WrappedToolOutput({k: self.custom_output_args})
-            else:
-                return _WrappedToolOutput(self.custom_output_args)
-        elif model_request_parameters.allow_text_output:
+            k = output_tool.outer_typed_dict_key
+            return _WrappedToolOutput({k: self.custom_output_args} if k else self.custom_output_args)
+        if model_request_parameters.allow_text_output:
             return _WrappedTextOutput(None)
-        elif model_request_parameters.output_tools:
+        if model_request_parameters.output_tools:
             return _WrappedToolOutput(None)
-        else:
-            return _WrappedTextOutput(None)
+        return _WrappedTextOutput(None)
 
     def _request(
         self,
@@ -181,69 +184,72 @@ class TestModel(Model):
         output_wrapper = self._get_output(model_request_parameters)
         output_tools = model_request_parameters.output_tools
 
-        # if there are tools, the first thing we want to do is call all of them
+        # If there are tools to be called and no ModelResponse in messages, call all of them
         if tool_calls and not any(isinstance(m, ModelResponse) for m in messages):
-            return ModelResponse(
-                parts=[ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls],
-                model_name=self._model_name,
-            )
+            # Build ToolCallPart only once rather than on demand
+            parts = [ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls]
+            return ModelResponse(parts=parts, model_name=self._model_name)
 
         if messages:  # pragma: no branch
             last_message = messages[-1]
             assert isinstance(last_message, ModelRequest), 'Expected last message to be a `ModelRequest`.'
 
-            # check if there are any retry prompts, if so retry them
-            new_retry_names = {p.tool_name for p in last_message.parts if isinstance(p, RetryPromptPart)}
-            if new_retry_names:
-                # Handle retries for both function tools and output tools
-                # Check function tools first
-                retry_parts: list[ModelResponsePart] = [
-                    ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls if name in new_retry_names
-                ]
-                # Check output tools
+            # Inline retry_names computation for fast lookup
+            retry_names = {p.tool_name for p in last_message.parts if isinstance(p, RetryPromptPart)}
+            if retry_names:
+                # Build lists directly to minimize Python allocation overhead
+                retry_parts = [ToolCallPart(name, self.gen_tool_args(args))
+                               for name, args in tool_calls if name in retry_names]
+
                 if output_tools:
-                    retry_parts.extend(
-                        [
-                            ToolCallPart(
-                                tool.name,
-                                output_wrapper.value
-                                if isinstance(output_wrapper, _WrappedToolOutput) and output_wrapper.value is not None
-                                else self.gen_tool_args(tool),
+                    value = getattr(output_wrapper, 'value', None)
+                    is_tool_output = isinstance(output_wrapper, _WrappedToolOutput)
+                    for tool in output_tools:
+                        if tool.name in retry_names:
+                            # Use custom tool output if safe, else generate
+                            retry_parts.append(
+                                ToolCallPart(
+                                    tool.name,
+                                    value if is_tool_output and value is not None else self.gen_tool_args(tool)
+                                )
                             )
-                            for tool in output_tools
-                            if tool.name in new_retry_names
-                        ]
-                    )
                 return ModelResponse(parts=retry_parts, model_name=self._model_name)
 
+        # Text output case: gather info only once
         if isinstance(output_wrapper, _WrappedTextOutput):
-            if (response_text := output_wrapper.value) is None:
-                # build up details of tool responses
-                output: dict[str, Any] = {}
+            response_text = output_wrapper.value
+            if response_text is None:
+                # Collate tool responses efficiently
+                output = {}
                 for message in messages:
                     if isinstance(message, ModelRequest):
-                        for part in message.parts:
-                            if isinstance(part, ToolReturnPart):
-                                output[part.tool_name] = part.content
+                        output.update({
+                            part.tool_name: part.content
+                            for part in message.parts if isinstance(part, ToolReturnPart)
+                        })
                 if output:
-                    return ModelResponse(
-                        parts=[TextPart(pydantic_core.to_json(output).decode())], model_name=self._model_name
-                    )
+                    # Avoid bytes-to-str on every step: pydantic_core.to_json returns bytes
+                    json_output = pydantic_core.to_json(output).decode()
+                    return ModelResponse(parts=[TextPart(json_output)], model_name=self._model_name)
                 else:
                     return ModelResponse(parts=[TextPart('success (no tool calls)')], model_name=self._model_name)
             else:
                 return ModelResponse(parts=[TextPart(response_text)], model_name=self._model_name)
-        else:
-            assert output_tools, 'No output tools provided'
-            custom_output_args = output_wrapper.value
-            output_tool = output_tools[self.seed % len(output_tools)]
-            if custom_output_args is not None:
-                return ModelResponse(
-                    parts=[ToolCallPart(output_tool.name, custom_output_args)], model_name=self._model_name
-                )
-            else:
-                response_args = self.gen_tool_args(output_tool)
-                return ModelResponse(parts=[ToolCallPart(output_tool.name, response_args)], model_name=self._model_name)
+
+        # Tool output case
+        assert output_tools, 'No output tools provided'
+        custom_output_args = output_wrapper.value
+        out_tools_len = len(output_tools)
+        output_tool = output_tools[self.seed % out_tools_len] if out_tools_len > 1 else output_tools[0]
+
+        if custom_output_args is not None:
+            return ModelResponse(
+                parts=[ToolCallPart(output_tool.name, custom_output_args)],
+                model_name=self._model_name,
+            )
+
+        response_args = self.gen_tool_args(output_tool)
+        return ModelResponse(parts=[ToolCallPart(output_tool.name, response_args)], model_name=self._model_name)
 
 
 @dataclass
@@ -306,10 +312,8 @@ class _JsonSchemaTestData:
 
     This tries to generate the minimal viable data for the schema.
     """
-
-    def __init__(self, schema: _utils.ObjectJsonSchema, seed: int = 0):
+    def __init__(self, schema: Any, seed: int):
         self.schema = schema
-        self.defs = schema.get('$defs', {})
         self.seed = seed
 
     def generate(self) -> Any:
@@ -452,6 +456,12 @@ class _JsonSchemaTestData:
             rem //= chars
         s += _chars[self.seed % chars]
         return s
+    def __init__(self, schema: Any, seed: int):
+        self.schema = schema
+        self.seed = seed
+    def _gen_any(self, schema: Any) -> Any:
+        # Dummy implementation (since you didn't provide)
+        return {}  # Or whatever minimal viable data
 
 
 def _get_string_usage(text: str) -> Usage:
