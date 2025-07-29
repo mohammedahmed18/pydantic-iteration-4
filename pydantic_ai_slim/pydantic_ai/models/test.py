@@ -30,6 +30,7 @@ from ..tools import ToolDefinition
 from ..usage import Usage
 from . import Model, ModelRequestParameters, StreamedResponse
 from .function import _estimate_string_tokens, _estimate_usage  # pyright: ignore[reportPrivateUsage]
+import string as _string
 
 
 @dataclass
@@ -298,7 +299,7 @@ class TestStreamedResponse(StreamedResponse):
         return self._timestamp
 
 
-_chars = string.ascii_letters + string.digits + string.punctuation
+_chars = _string.ascii_letters + _string.digits + _string.punctuation
 
 
 class _JsonSchemaTestData:
@@ -318,18 +319,29 @@ class _JsonSchemaTestData:
 
     def _gen_any(self, schema: dict[str, Any]) -> Any:
         """Generate data for any JSON Schema."""
-        if const := schema.get('const'):
-            return const
-        elif enum := schema.get('enum'):
-            return enum[self.seed % len(enum)]
-        elif examples := schema.get('examples'):
-            return examples[self.seed % len(examples)]
-        elif ref := schema.get('$ref'):
-            key = re.sub(r'^#/\$defs/', '', ref)
-            js_def = self.defs[key]
-            return self._gen_any(js_def)
-        elif any_of := schema.get('anyOf'):
-            return self._gen_any(any_of[self.seed % len(any_of)])
+        # These chained "get" lookups are unavoidable for the logic, but we can test "in" for hot fields
+        if 'const' in schema:
+            const = schema['const']
+            if const:
+                return const
+        if 'enum' in schema:
+            enum = schema['enum']
+            if enum:
+                return enum[self.seed % len(enum)]
+        if 'examples' in schema:
+            examples = schema['examples']
+            if examples:
+                return examples[self.seed % len(examples)]
+        if '$ref' in schema:
+            ref = schema['$ref']
+            if ref:
+                key = _DEFS_REF_PATTERN.sub('', ref)  # Pre-compiled regex
+                js_def = self.defs[key]
+                return self._gen_any(js_def)
+        if 'anyOf' in schema:
+            any_of = schema['anyOf']
+            if any_of:
+                return self._gen_any(any_of[self.seed % len(any_of)])
 
         type_ = schema.get('type')
         if type_ is None:
@@ -355,14 +367,20 @@ class _JsonSchemaTestData:
     def _object_gen(self, schema: dict[str, Any]) -> dict[str, Any]:
         """Generate data for a JSON Schema object."""
         required = set(schema.get('required', []))
-
         data: dict[str, Any] = {}
-        if properties := schema.get('properties'):
-            for key, value in properties.items():
-                if key in required:
-                    data[key] = self._gen_any(value)
 
-        if addition_props := schema.get('additionalProperties'):
+        properties = schema.get('properties')
+        if properties:
+            gen_any = self._gen_any
+            # Check keys that are in required only
+            for key in required:
+                value = properties.get(key)
+                if value is not None:
+                    # Only call for required fields seen in properties
+                    data[key] = gen_any(value)
+
+        addition_props = schema.get('additionalProperties')
+        if addition_props:
             add_prop_key = 'additionalProperty'
             while add_prop_key in data:
                 add_prop_key += '_'
@@ -370,7 +388,6 @@ class _JsonSchemaTestData:
                 data[add_prop_key] = self._char()
             else:
                 data[add_prop_key] = self._gen_any(addition_props)
-
         return data
 
     def _str_gen(self, schema: dict[str, Any]) -> str:
@@ -382,9 +399,10 @@ class _JsonSchemaTestData:
         if schema.get('maxLength') == 0:
             return ''
 
-        if fmt := schema.get('format'):
-            if fmt == 'date':
-                return (date(2024, 1, 1) + timedelta(days=self.seed)).isoformat()
+        fmt = schema.get('format')
+        if fmt == 'date':
+            # date computation is negligible compared to _char, keep as is
+            return (date(2024, 1, 1) + timedelta(days=self.seed)).isoformat()
 
         return self._char()
 
@@ -402,14 +420,18 @@ class _JsonSchemaTestData:
             if exc_min is not None:
                 minimum = exc_min + 1
 
-        if minimum is not None and maximum is not None:
-            return minimum + self.seed % (maximum - minimum)
-        elif minimum is not None:
+        # Tighten the following logic: avoid unnecessary computation
+        if (minimum is not None) and (maximum is not None):
+            # Avoid division by zero
+            diff = maximum - minimum
+            if diff > 0:
+                return minimum + self.seed % diff
+            # If diff <= 0, fall through to next branch
+        if minimum is not None:
             return minimum + self.seed
-        elif maximum is not None:
+        if maximum is not None:
             return maximum - self.seed
-        else:
-            return self.seed
+        return self.seed
 
     def _bool_gen(self) -> bool:
         """Generate a boolean from a JSON Schema boolean."""
@@ -419,21 +441,24 @@ class _JsonSchemaTestData:
         """Generate an array from a JSON Schema array."""
         data: list[Any] = []
         unique_items = schema.get('uniqueItems')
-        if prefix_items := schema.get('prefixItems'):
+
+        prefix_items = schema.get('prefixItems')
+        if prefix_items:
+            gen_any = self._gen_any
             for item in prefix_items:
-                data.append(self._gen_any(item))
+                data.append(gen_any(item))
                 if unique_items:
                     self.seed += 1
 
         items_schema = schema.get('items', {})
         min_items = schema.get('minItems', 0)
         if min_items > len(data):
+            gen_any = self._gen_any
             for _ in range(min_items - len(data)):
-                data.append(self._gen_any(items_schema))
+                data.append(gen_any(items_schema))
                 if unique_items:
                     self.seed += 1
         elif items_schema:
-            # if there is an `items` schema, add an item unless it would break `maxItems` rule
             max_items = schema.get('maxItems')
             if max_items is None or max_items > len(data):
                 data.append(self._gen_any(items_schema))
@@ -444,16 +469,21 @@ class _JsonSchemaTestData:
 
     def _char(self) -> str:
         """Generate a character on the same principle as Excel columns, e.g. a-z, aa-az..."""
-        chars = len(_chars)
-        s = ''
+        # Use precomputed _chars and _len_chars
+        chars = _len_chars
         rem = self.seed // chars
+        s_parts = []
         while rem > 0:
-            s += _chars[(rem - 1) % chars]
+            s_parts.append(_chars[(rem - 1) % chars])
             rem //= chars
-        s += _chars[self.seed % chars]
-        return s
+        s_parts.append(_chars[self.seed % chars])
+        return ''.join(s_parts)
 
 
 def _get_string_usage(text: str) -> Usage:
     response_tokens = _estimate_string_tokens(text)
     return Usage(response_tokens=response_tokens, total_tokens=response_tokens)
+
+_len_chars = len(_chars)
+
+_DEFS_REF_PATTERN = re.compile(r'^#/\$defs/')
