@@ -376,20 +376,36 @@ class OutputSchemaWithoutMode(BaseOutputSchema[OutputDataT]):
         super().__init__(allows_deferred_tool_calls)
         self.processor = processor
         self._toolset = toolset
+        self._mode_cache = {}
 
     def with_default_mode(self, mode: StructuredOutputMode) -> OutputSchema[OutputDataT]:
+        cache = self._mode_cache
+        # Use cache key as simply the mode string
+        cached_schema = cache.get(mode)
+        if cached_schema is not None:
+            return cached_schema
+
+        # Bind attributes locally to avoid repeated lookups
+        processor = self.processor
+        allows_deferred_tool_calls = self.allows_deferred_tool_calls
+        toolset = self._toolset
+
         if mode == 'native':
-            return NativeOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
+            schema = NativeOutputSchema(
+                processor=processor, allows_deferred_tool_calls=allows_deferred_tool_calls
             )
         elif mode == 'prompted':
-            return PromptedOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
+            schema = PromptedOutputSchema(
+                processor=processor, allows_deferred_tool_calls=allows_deferred_tool_calls
             )
         elif mode == 'tool':
-            return ToolOutputSchema(toolset=self.toolset, allows_deferred_tool_calls=self.allows_deferred_tool_calls)
+            schema = ToolOutputSchema(
+                toolset=toolset, allows_deferred_tool_calls=allows_deferred_tool_calls
+            )
         else:
             assert_never(mode)
+        cache[mode] = schema
+        return schema
 
     @property
     def toolset(self) -> OutputToolset[Any] | None:
