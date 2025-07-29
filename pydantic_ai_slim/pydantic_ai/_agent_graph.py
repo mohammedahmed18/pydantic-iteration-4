@@ -138,7 +138,17 @@ def is_agent_node(
 
     This method preserves the generic parameters on the narrowed type, unlike `isinstance(node, AgentNode)`.
     """
-    return isinstance(node, AgentNode)
+    global _agent_node_cls
+    # Localize lookup for slightly faster "isinstance" (avoids repeated global name resolution)
+    if _agent_node_cls is None:
+        # Lazy lookup: Leverage presence of AgentNode on node's MRO to avoid import/attribute churn in the hot path
+        cls = type(node)
+        for mro_cls in cls.__mro__:
+            if mro_cls.__name__ == 'AgentNode':
+                _agent_node_cls = mro_cls
+                break
+    agent_node_cls = _agent_node_cls
+    return isinstance(node, agent_node_cls) if agent_node_cls is not None else False
 
 
 @dataclasses.dataclass
@@ -881,3 +891,5 @@ async def _process_message_history(
                 sync_processor = cast(_HistoryProcessorSync, processor)
                 messages = await run_in_executor(sync_processor, messages)
     return messages
+
+_agent_node_cls = None
