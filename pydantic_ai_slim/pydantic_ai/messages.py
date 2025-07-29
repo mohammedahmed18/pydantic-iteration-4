@@ -20,6 +20,7 @@ from ._utils import (
 )
 from .exceptions import UnexpectedModelBehavior
 from .usage import Usage
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from .models.instrumented import InstrumentationSettings
@@ -312,7 +313,7 @@ class DocumentUrl(FileUrl):
 
     def _infer_media_type(self) -> str:
         """Return the media type of the document, based on the url."""
-        type_, _ = guess_type(self.url)
+        type_ = _cached_guess_type(self.url)
         if type_ is None:
             raise ValueError(f'Unknown document file extension: {self.url}')
         return type_
@@ -1143,6 +1144,12 @@ class FunctionToolResultEvent:
         return self.result.tool_call_id
 
     __repr__ = _utils.dataclasses_no_defaults_repr
+
+
+@lru_cache(maxsize=4096)
+def _cached_guess_type(url: str) -> str | None:
+    type_, _ = guess_type(url)
+    return type_
 
 
 HandleResponseEvent = Annotated[
