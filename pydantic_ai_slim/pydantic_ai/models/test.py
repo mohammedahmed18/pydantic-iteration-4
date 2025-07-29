@@ -1,6 +1,4 @@
 from __future__ import annotations as _annotations
-
-import re
 import string
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
@@ -30,6 +28,7 @@ from ..tools import ToolDefinition
 from ..usage import Usage
 from . import Model, ModelRequestParameters, StreamedResponse
 from .function import _estimate_string_tokens, _estimate_usage  # pyright: ignore[reportPrivateUsage]
+from string import ascii_letters, digits, punctuation
 
 
 @dataclass
@@ -298,7 +297,7 @@ class TestStreamedResponse(StreamedResponse):
         return self._timestamp
 
 
-_chars = string.ascii_letters + string.digits + string.punctuation
+_chars = ascii_letters + digits + punctuation
 
 
 class _JsonSchemaTestData:
@@ -318,51 +317,66 @@ class _JsonSchemaTestData:
 
     def _gen_any(self, schema: dict[str, Any]) -> Any:
         """Generate data for any JSON Schema."""
-        if const := schema.get('const'):
+        # Fast-path: test all optionals in sequence using dict get. 
+        const = schema.get('const')
+        if const is not None:
             return const
-        elif enum := schema.get('enum'):
-            return enum[self.seed % len(enum)]
-        elif examples := schema.get('examples'):
-            return examples[self.seed % len(examples)]
-        elif ref := schema.get('$ref'):
-            key = re.sub(r'^#/\$defs/', '', ref)
+        enum = schema.get('enum')
+        if enum is not None:
+            idx = self.seed % len(enum)
+            return enum[idx]
+        examples = schema.get('examples')
+        if examples is not None:
+            idx = self.seed % len(examples)
+            return examples[idx]
+        ref = schema.get('$ref')
+        if ref is not None:
+            # Avoid regex for "#/$defs/..." → just remove prefix (we know format)
+            prefix = '#/$defs/'
+            key = ref[len(prefix):] if ref.startswith(prefix) else ref
             js_def = self.defs[key]
             return self._gen_any(js_def)
-        elif any_of := schema.get('anyOf'):
-            return self._gen_any(any_of[self.seed % len(any_of)])
+        any_of = schema.get('anyOf')
+        if any_of is not None:
+            idx = self.seed % len(any_of)
+            return self._gen_any(any_of[idx])
 
         type_ = schema.get('type')
         if type_ is None:
             # if there's no type or ref, we can't generate anything
             return self._char()
-        elif type_ == 'object':
+        # Use robust if-elif chain instead of dict-based dispatch for speed (few types)
+        if type_ == 'object':
             return self._object_gen(schema)
-        elif type_ == 'string':
+        if type_ == 'string':
             return self._str_gen(schema)
-        elif type_ == 'integer':
+        if type_ == 'integer':
             return self._int_gen(schema)
-        elif type_ == 'number':
+        if type_ == 'number':
+            # Don't call float(self._int_gen()) if not needed
             return float(self._int_gen(schema))
-        elif type_ == 'boolean':
+        if type_ == 'boolean':
             return self._bool_gen()
-        elif type_ == 'array':
+        if type_ == 'array':
             return self._array_gen(schema)
-        elif type_ == 'null':
+        if type_ == 'null':
             return None
-        else:
-            raise NotImplementedError(f'Unknown type: {type_}, please submit a PR to extend JsonSchemaTestData!')
+        # Only reach here if unknown type
+        raise NotImplementedError(f'Unknown type: {type_}, please submit a PR to extend JsonSchemaTestData!')
 
     def _object_gen(self, schema: dict[str, Any]) -> dict[str, Any]:
         """Generate data for a JSON Schema object."""
-        required = set(schema.get('required', []))
+        required = set(schema.get('required', ()))
 
         data: dict[str, Any] = {}
-        if properties := schema.get('properties'):
-            for key, value in properties.items():
-                if key in required:
-                    data[key] = self._gen_any(value)
+        props = schema.get('properties')
+        if props:
+            gen = self._gen_any
+            for key in required & props.keys():
+                data[key] = gen(props[key])
 
-        if addition_props := schema.get('additionalProperties'):
+        addition_props = schema.get('additionalProperties')
+        if addition_props:
             add_prop_key = 'additionalProperty'
             while add_prop_key in data:
                 add_prop_key += '_'
@@ -370,7 +384,6 @@ class _JsonSchemaTestData:
                 data[add_prop_key] = self._char()
             else:
                 data[add_prop_key] = self._gen_any(addition_props)
-
         return data
 
     def _str_gen(self, schema: dict[str, Any]) -> str:
@@ -382,9 +395,13 @@ class _JsonSchemaTestData:
         if schema.get('maxLength') == 0:
             return ''
 
-        if fmt := schema.get('format'):
+        fmt = schema.get('format')
+        if fmt:
             if fmt == 'date':
-                return (date(2024, 1, 1) + timedelta(days=self.seed)).isoformat()
+                # Precompute start date once
+                base_date = date(2024, 1, 1)
+                d = base_date + timedelta(days=self.seed)
+                return d.isoformat()
 
         return self._char()
 
@@ -403,57 +420,66 @@ class _JsonSchemaTestData:
                 minimum = exc_min + 1
 
         if minimum is not None and maximum is not None:
-            return minimum + self.seed % (maximum - minimum)
-        elif minimum is not None:
+            # Avoid modulo by zero
+            diff = maximum - minimum
+            if diff > 0:
+                return minimum + (self.seed % diff)
+            return minimum
+        if minimum is not None:
             return minimum + self.seed
-        elif maximum is not None:
+        if maximum is not None:
             return maximum - self.seed
-        else:
-            return self.seed
+        return self.seed
 
     def _bool_gen(self) -> bool:
         """Generate a boolean from a JSON Schema boolean."""
-        return bool(self.seed % 2)
+        return (self.seed & 1) == 1  # Faster than modulo
 
     def _array_gen(self, schema: dict[str, Any]) -> list[Any]:
         """Generate an array from a JSON Schema array."""
         data: list[Any] = []
         unique_items = schema.get('uniqueItems')
-        if prefix_items := schema.get('prefixItems'):
+        prefix_items = schema.get('prefixItems')
+        gen_any = self._gen_any # Minor perf saving
+        if prefix_items:
             for item in prefix_items:
-                data.append(self._gen_any(item))
+                data.append(gen_any(item))
                 if unique_items:
                     self.seed += 1
 
         items_schema = schema.get('items', {})
         min_items = schema.get('minItems', 0)
-        if min_items > len(data):
-            for _ in range(min_items - len(data)):
-                data.append(self._gen_any(items_schema))
+        additional = min_items - len(data)
+        if additional > 0:
+            for _ in range(additional):
+                data.append(gen_any(items_schema))
                 if unique_items:
                     self.seed += 1
         elif items_schema:
-            # if there is an `items` schema, add an item unless it would break `maxItems` rule
             max_items = schema.get('maxItems')
             if max_items is None or max_items > len(data):
-                data.append(self._gen_any(items_schema))
+                data.append(gen_any(items_schema))
                 if unique_items:
                     self.seed += 1
-
         return data
 
     def _char(self) -> str:
         """Generate a character on the same principle as Excel columns, e.g. a-z, aa-az..."""
-        chars = len(_chars)
-        s = ''
-        rem = self.seed // chars
+        s = []
+        chars = _chars
+        chars_len = _CHARS_LEN
+        seed = self.seed
+        rem = seed // chars_len
+        # Generate the high-order characters (if seed >= len(chars))
         while rem > 0:
-            s += _chars[(rem - 1) % chars]
-            rem //= chars
-        s += _chars[self.seed % chars]
-        return s
+            s.append(chars[(rem - 1) % chars_len])
+            rem //= chars_len
+        s.append(chars[seed % chars_len])
+        return ''.join(s)
 
 
 def _get_string_usage(text: str) -> Usage:
     response_tokens = _estimate_string_tokens(text)
     return Usage(response_tokens=response_tokens, total_tokens=response_tokens)
+
+_CHARS_LEN = len(_chars)
