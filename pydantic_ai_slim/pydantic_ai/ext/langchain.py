@@ -2,7 +2,7 @@ from typing import Any, Protocol
 
 from pydantic.json_schema import JsonSchemaValue
 
-from pydantic_ai.tools import Tool
+from pydantic_ai.tools import Tool as _Tool, Tool
 from pydantic_ai.toolsets.function import FunctionToolset
 
 
@@ -36,25 +36,43 @@ def tool_from_langchain(langchain_tool: LangChainTool) -> Tool:
     Returns:
         A Pydantic AI tool that corresponds to the LangChain tool.
     """
+    # Pre-fetch where possible
     function_name = langchain_tool.name
     function_description = langchain_tool.description
-    inputs = langchain_tool.args.copy()
-    required = sorted({name for name, detail in inputs.items() if 'default' not in detail})
+    # Only one pass through items for both required and defaults
+    inputs = langchain_tool.args
+    required = []
+    defaults = {}
+    # Avoid copy: just check for 'default' field
+    for name, detail in inputs.items():
+        if 'default' in detail:
+            defaults[name] = detail['default']
+        else:
+            required.append(name)
+    required.sort()
+    # Do not copy input schema unless absolutely necessary
     schema: JsonSchemaValue = langchain_tool.get_input_jsonschema()
+    # Defensive, but only update if missing to retain shared structure
     if 'additionalProperties' not in schema:
+        schema = dict(schema)  # shallow copy only if needed
         schema['additionalProperties'] = False
     if required:
+        if schema is not dict:
+            # in very rare cases where schema was not updated above
+            schema = dict(schema)
         schema['required'] = required
 
-    defaults = {name: detail['default'] for name, detail in inputs.items() if 'default' in detail}
-
-    # restructures the arguments to match langchain tool run
     def proxy(*args: Any, **kwargs: Any) -> str:
-        assert not args, 'This should always be called with kwargs'
-        kwargs = defaults | kwargs
-        return langchain_tool.run(kwargs)
+        # assert not args, 'This should always be called with kwargs'
+        if args:
+            raise AssertionError('This should always be called with kwargs')
+        if kwargs:
+            kw = defaults.copy()
+            kw.update(kwargs)
+            return langchain_tool.run(kw)
+        return langchain_tool.run(defaults)
 
-    return Tool.from_schema(
+    return _Tool.from_schema(
         function=proxy,
         name=function_name,
         description=function_description,

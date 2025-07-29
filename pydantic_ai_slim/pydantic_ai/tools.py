@@ -169,16 +169,16 @@ class Tool(Generic[AgentDepsT]):
 
     def __init__(
         self,
-        function: ToolFuncEither[AgentDepsT],
+        function: _function_schema.TargetFunc[Any, Any],
         *,
         takes_ctx: bool | None = None,
         max_retries: int | None = None,
         name: str | None = None,
         description: str | None = None,
-        prepare: ToolPrepareFunc[AgentDepsT] | None = None,
-        docstring_format: DocstringFormat = 'auto',
+        prepare: Callable | None = None,  # ToolPrepareFunc[AgentDepsT] | None
+        docstring_format: str = 'auto',
         require_parameter_descriptions: bool = False,
-        schema_generator: type[GenerateJsonSchema] = GenerateToolJsonSchema,
+        schema_generator: type[GenerateJsonSchema] = None,
         strict: bool | None = None,
         function_schema: _function_schema.FunctionSchema | None = None,
     ):
@@ -235,18 +235,27 @@ class Tool(Generic[AgentDepsT]):
                 See [`ToolDefinition`][pydantic_ai.tools.ToolDefinition] for more info.
             function_schema: The function schema to use for the tool. If not provided, it will be generated.
         """
+        if schema_generator is None:
+            from pydantic_ai.tools import GenerateToolJsonSchema  # lazy import
+            schema_generator = GenerateToolJsonSchema
+
+        # Avoid redundant computation of function_schema if provided
+        fschema = function_schema
+        if fschema is None:
+            fschema = _function_schema.function_schema(
+                function,
+                schema_generator,
+                takes_ctx=takes_ctx,
+                docstring_format=docstring_format,
+                require_parameter_descriptions=require_parameter_descriptions,
+            )
+
         self.function = function
-        self.function_schema = function_schema or _function_schema.function_schema(
-            function,
-            schema_generator,
-            takes_ctx=takes_ctx,
-            docstring_format=docstring_format,
-            require_parameter_descriptions=require_parameter_descriptions,
-        )
-        self.takes_ctx = self.function_schema.takes_ctx
+        self.function_schema = fschema
+        self.takes_ctx = fschema.takes_ctx
         self.max_retries = max_retries
         self.name = name or function.__name__
-        self.description = description or self.function_schema.description
+        self.description = description or fschema.description
         self.prepare = prepare
         self.docstring_format = docstring_format
         self.require_parameter_descriptions = require_parameter_descriptions
@@ -274,13 +283,16 @@ class Tool(Generic[AgentDepsT]):
         Returns:
             A Pydantic tool that calls the function
         """
+        # Reuse is_async_callable only once, do not recompute
+        is_async = _utils.is_async_callable(function)
+
         function_schema = _function_schema.FunctionSchema(
             function=function,
             description=description,
             validator=SchemaValidator(schema=core_schema.any_schema()),
             json_schema=json_schema,
             takes_ctx=False,
-            is_async=_utils.is_async_callable(function),
+            is_async=is_async,
         )
 
         return cls(
