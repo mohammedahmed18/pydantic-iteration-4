@@ -98,6 +98,9 @@ class TestModel(Model):
         self.last_model_request_parameters = None
         self._model_name = 'test'
         self._system = 'test'
+        # For tool lookup caching
+        self._last_tools_key = None
+        self._last_tools_lookup = None
         super().__init__(settings=settings, profile=profile)
 
     async def request(
@@ -140,12 +143,22 @@ class TestModel(Model):
         return _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
+        # Fast path: call all tools, single comprehension
         if self.call_tools == 'all':
-            return [(r.name, r) for r in model_request_parameters.function_tools]
-        else:
-            function_tools_lookup = {t.name: t for t in model_request_parameters.function_tools}
-            tools_to_call = (function_tools_lookup[name] for name in self.call_tools)
-            return [(r.name, r) for r in tools_to_call]
+            return [(tool.name, tool) for tool in model_request_parameters.function_tools]
+
+        # For custom tool calls, cache lookup dicts by tool id tuple, but not across model_request_parameters!
+        tools = model_request_parameters.function_tools
+        # Use id or tuple as a cache key for tools lookup
+        tools_key = id(tools)
+        # Only recompute lookup if tools have changed
+        if self._last_tools_key != tools_key:
+            self._last_tools_lookup = {t.name: t for t in tools}
+            self._last_tools_key = tools_key
+        tools_lookup = self._last_tools_lookup
+
+        # Direct comprehension, raises KeyError if name is missing (same as before)
+        return [(name, tools_lookup[name]) for name in self.call_tools]
 
     def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:
         if self.custom_output_text is not None:
