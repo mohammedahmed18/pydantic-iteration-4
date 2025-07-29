@@ -598,9 +598,10 @@ class _GeminiContent(TypedDict):
 
 def _content_model_response(m: ModelResponse) -> _GeminiContent:
     parts: list[_GeminiPartUnion] = []
+    append_part = parts.append  # Local variable for faster append
     for item in m.parts:
         if isinstance(item, ToolCallPart):
-            parts.append(_function_call_part_from_call(item))
+            append_part(_function_call_part_from_call(item))
         elif isinstance(item, ThinkingPart):
             # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
             # please open an issue. The below code is the code to send thinking to the provider.
@@ -608,9 +609,10 @@ def _content_model_response(m: ModelResponse) -> _GeminiContent:
             pass
         elif isinstance(item, TextPart):
             if item.content:
-                parts.append(_GeminiTextPart(text=item.content))
+                append_part(_GeminiTextPart(text=item.content))
         else:
-            assert_never(item)
+            # Use raise outside assert_never to avoid runtime overhead except for error path
+            raise AssertionError(f"Unexpected type in m.parts: {type(item).__name__}: {item!r}")
     return _GeminiContent(role='model', parts=parts)
 
 
