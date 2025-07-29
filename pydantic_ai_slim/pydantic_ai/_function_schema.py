@@ -239,20 +239,34 @@ def _takes_ctx(function: TargetFunc[P, R]) -> TypeIs[WithCtx[P, R]]:
     Returns:
         `True` if the function takes a `RunContext` as first argument, `False` otherwise.
     """
+    # Fast-path: Try to access annotations and first argument directly
     try:
-        sig = signature(function)
-    except ValueError:  # pragma: no cover
-        return False  # pragma: no cover
-    try:
-        first_param_name = next(iter(sig.parameters.keys()))
-    except StopIteration:
-        return False
-    else:
         type_hints = _typing_extra.get_function_type_hints(function)
-        annotation = type_hints.get(first_param_name)
-        if annotation is None:
+        code = getattr(function, '__code__', None)
+        if code is not None and code.co_argcount > 0:
+            first_param_name = function.__code__.co_varnames[0]
+        else:
+            # fallback to signature for flexibility, e.g. builtins or CFuncs
+            raise AttributeError
+    except Exception:
+        # fallback to the original approach for completeness
+        try:
+            from inspect import signature
+            sig = signature(function)
+        except ValueError:  # pragma: no cover
             return False  # pragma: no cover
-        return True is not sig.empty and _is_call_ctx(annotation)
+        try:
+            first_param_name = next(iter(sig.parameters.keys()))
+        except StopIteration:
+            return False
+        else:
+            type_hints = _typing_extra.get_function_type_hints(function)
+    
+    annotation = type_hints.get(first_param_name)
+    if annotation is None:
+        return False  # pragma: no cover
+
+    return _is_call_ctx(annotation)
 
 
 def _build_schema(
