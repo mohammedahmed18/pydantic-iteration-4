@@ -77,11 +77,14 @@ def doc_descriptions(
 
 def _infer_docstring_style(doc: str) -> DocstringStyle:
     """Simplistic docstring style inference."""
+    # Precompile all patterns with formatted replacements, collect possible matches
     for pattern, replacements, style in _docstring_style_patterns:
-        matches = (
-            re.search(pattern.format(replacement), doc, re.IGNORECASE | re.MULTILINE) for replacement in replacements
-        )
-        if any(matches):
+        # Instead of a generator and any(), create combined regex so re.search
+        # is called at most once per (pattern, replacements) by using alternation (|)
+        # This is much faster since doc is scanned once per pattern.
+        joined = "|".join(re.escape(rep) for rep in replacements)
+        combined_pattern = pattern.format(f"(?:{joined})")
+        if re.search(combined_pattern, doc, re.IGNORECASE | re.MULTILINE):
             return style
     # fallback to google style
     return 'google'
