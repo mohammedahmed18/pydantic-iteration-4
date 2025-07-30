@@ -318,17 +318,28 @@ class _JsonSchemaTestData:
 
     def _gen_any(self, schema: dict[str, Any]) -> Any:
         """Generate data for any JSON Schema."""
-        if const := schema.get('const'):
+        # Inline assignment to local variables for faster lookups (dict.get is expensive in a long chain)
+        # These lines are equivalent to the original code, just flattened for performance.
+        const = schema.get('const')
+        if const is not None:
             return const
-        elif enum := schema.get('enum'):
+        enum = schema.get('enum')
+        if enum is not None:
             return enum[self.seed % len(enum)]
-        elif examples := schema.get('examples'):
+        examples = schema.get('examples')
+        if examples is not None:
             return examples[self.seed % len(examples)]
-        elif ref := schema.get('$ref'):
-            key = re.sub(r'^#/\$defs/', '', ref)
+        ref = schema.get('$ref')
+        if ref is not None:
+            key = ref
+            if key.startswith('#/$defs/'):
+                key = key[8:]  # avoid regex for common prefix
+            else:
+                key = re.sub(r'^#/\$defs/', '', ref)  # fallback to regex only if needed (edge case)
             js_def = self.defs[key]
             return self._gen_any(js_def)
-        elif any_of := schema.get('anyOf'):
+        any_of = schema.get('anyOf')
+        if any_of is not None:
             return self._gen_any(any_of[self.seed % len(any_of)])
 
         type_ = schema.get('type')
