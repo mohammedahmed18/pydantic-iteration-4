@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import Part
 
 try:
     from google import genai
@@ -510,22 +511,38 @@ def _process_response_from_parts(
     vendor_details: dict[str, Any] | None = None,
 ) -> ModelResponse:
     items: list[ModelResponsePart] = []
+    TextPart_ = TextPart
+    ThinkingPart_ = ThinkingPart
+    ToolCallPart_ = ToolCallPart
+    UnexpectedModelBehavior_ = UnexpectedModelBehavior
+
+    append_item = items.append
+
     for part in parts:
-        if part.text is not None:
-            if part.thought:
-                items.append(ThinkingPart(content=part.text))
+        text = part.text
+        if text is not None:
+            # Cache condition and class locally, append directly
+            if getattr(part, "thought", False):
+                append_item(ThinkingPart_(content=text))
             else:
-                items.append(TextPart(content=part.text))
-        elif part.function_call:
-            assert part.function_call.name is not None
-            tool_call_part = ToolCallPart(tool_name=part.function_call.name, args=part.function_call.args)
-            if part.function_call.id is not None:
-                tool_call_part.tool_call_id = part.function_call.id  # pragma: no cover
-            items.append(tool_call_part)
-        elif part.function_response:  # pragma: no cover
-            raise UnexpectedModelBehavior(
-                f'Unsupported response from Gemini, expected all parts to be function calls or text, got: {part!r}'
-            )
+                append_item(TextPart_(content=text))
+        else:
+            func_call = getattr(part, "function_call", None)
+            if func_call:
+                name = func_call.name
+                assert name is not None
+                # Fast-path: set tool_call_id only if not None
+                tool_call_id = func_call.id
+                args = func_call.args
+                if tool_call_id is not None:
+                    append_item(ToolCallPart_(tool_name=name, args=args, tool_call_id=tool_call_id))
+                else:
+                    append_item(ToolCallPart_(tool_name=name, args=args))
+            elif getattr(part, "function_response", None):  # pragma: no cover
+                raise UnexpectedModelBehavior_(
+                    f'Unsupported response from Gemini, expected all parts to be function calls or text, got: {part!r}'
+                )
+
     return ModelResponse(
         parts=items, model_name=model_name, usage=usage, vendor_id=vendor_id, vendor_details=vendor_details
     )
