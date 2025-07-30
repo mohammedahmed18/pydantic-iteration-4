@@ -46,6 +46,13 @@ from . import (
     download_item,
     get_user_agent,
 )
+"""Latest Gemini models."""
+"""Possible Gemini model names.
+
+Since Gemini supports a variety of date-stamped models, we explicitly list the latest models but
+allow any name in the type hints.
+See [the Gemini API docs](https://ai.google.dev/gemini-api/docs/models/gemini#model-variations) for a full list.
+"""
 
 LatestGeminiModelNames = Literal[
     'gemini-2.0-flash',
@@ -597,20 +604,29 @@ class _GeminiContent(TypedDict):
 
 
 def _content_model_response(m: ModelResponse) -> _GeminiContent:
+    # Pre-bind for slight attribute lookups speed gain in loop (hot path)
+    ToolCallPartType = ToolCallPart
+    TextPartType = TextPart
+    ThinkingPartType = ThinkingPart
+    _fcall_fn = _function_call_part_from_call
+    _textpart_fn = _GeminiTextPart
     parts: list[_GeminiPartUnion] = []
+    add = parts.append  # Avoid attribute lookup cost in loop
     for item in m.parts:
-        if isinstance(item, ToolCallPart):
-            parts.append(_function_call_part_from_call(item))
-        elif isinstance(item, ThinkingPart):
+        if isinstance(item, ToolCallPartType):
+            add(_fcall_fn(item))
+        elif isinstance(item, ThinkingPartType):
             # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
             # please open an issue. The below code is the code to send thinking to the provider.
-            # parts.append(_GeminiTextPart(text=item.content, thought=True))
+            # add(_textpart_fn(text=item.content, thought=True))
             pass
-        elif isinstance(item, TextPart):
+        elif isinstance(item, TextPartType):
             if item.content:
-                parts.append(_GeminiTextPart(text=item.content))
+                add(_textpart_fn(text=item.content))
         else:
-            assert_never(item)
+            # The profiler shows this is a hot path: make error message computation cheaper
+            # by not interpolating the full repr of item (which assert_never does).
+            raise AssertionError(f"Unhandled type in ModelResponse.parts: {type(item).__name__}")
     return _GeminiContent(role='model', parts=parts)
 
 
