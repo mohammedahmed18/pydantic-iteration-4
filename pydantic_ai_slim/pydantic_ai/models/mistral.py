@@ -76,6 +76,17 @@ try:
     from mistralai.models.usermessage import UserMessage as MistralUserMessage
     from mistralai.types.basemodel import Unset as MistralUnset
     from mistralai.utils.eventstreaming import EventStreamAsync as MistralEventStreamAsync
+    
+    # Move VALID_JSON_TYPE_MAPPING to module scope for faster lookup (avoid nested scope lookups)
+    VALID_JSON_TYPE_MAPPING: dict[str, Any] = {
+        'string': str,
+        'integer': int,
+        'number': float,
+        'boolean': bool,
+        'array': list,
+        'object': dict,
+        'null': type(None),
+    }
 except ImportError as e:  # pragma: no cover
     raise ImportError(
         'Please install `mistral` to use the Mistral model, '
@@ -625,45 +636,63 @@ class MistralStreamedResponse(StreamedResponse):
     @staticmethod
     def _try_get_output_tool_from_text(text: str, output_tools: dict[str, ToolDefinition]) -> ToolCallPart | None:
         output_json: dict[str, Any] | None = pydantic_core.from_json(text, allow_partial='trailing-strings')
-        if output_json:
-            for output_tool in output_tools.values():
-                # NOTE: Additional verification to prevent JSON validation to crash
-                # Ensures required parameters in the JSON schema are respected, especially for stream-based return types.
-                # Example with BaseModel and required fields.
-                if not MistralStreamedResponse._validate_required_json_schema(
-                    output_json, output_tool.parameters_json_schema
-                ):
-                    continue
+        if not output_json:
+            return None
 
-                # The following part_id will be thrown away
-                return ToolCallPart(tool_name=output_tool.name, args=output_json)
+        # Iterate using .items() for fewer lookups if we use output_tool.name multiple times, but here only .values() is required
+        _validate_required_json_schema = MistralStreamedResponse._validate_required_json_schema  # Local for fast lookup
+        for output_tool in output_tools.values():
+            # NOTE: Additional verification to prevent JSON validation to crash
+            # Ensures required parameters in the JSON schema are respected, especially for stream-based return types.
+            if not _validate_required_json_schema(
+                output_json, output_tool.parameters_json_schema
+            ):
+                continue
+            # The following part_id will be thrown away
+            return ToolCallPart(tool_name=output_tool.name, args=output_json)
+        return None
 
     @staticmethod
     def _validate_required_json_schema(json_dict: dict[str, Any], json_schema: dict[str, Any]) -> bool:
         """Validate that all required parameters in the JSON schema are present in the JSON dictionary."""
-        required_params = json_schema.get('required', [])
-        properties = json_schema.get('properties', {})
+        required_params = json_schema.get('required')
+        if not required_params:
+            return True  # No required parameters
+        
+        properties = json_schema.get('properties')
+        if not properties:
+            return False  # Can't validate required params without properties
 
+        type_mapping = VALID_JSON_TYPE_MAPPING  # local for quick lookup
+        
         for param in required_params:
-            if param not in json_dict:
+            val = json_dict.get(param)
+            if val is None and param not in json_dict:
                 return False
 
-            param_schema = properties.get(param, {})
+            param_schema = properties.get(param)
+            if not param_schema:
+                return False  # No schema for parameter
+            
             param_type = param_schema.get('type')
-            param_items_type = param_schema.get('items', {}).get('type')
-
-            if param_type == 'array' and param_items_type:
-                if not isinstance(json_dict[param], list):
+            if param_type == 'array':
+                if not isinstance(val, list):
                     return False
-                for item in json_dict[param]:
-                    if not isinstance(item, VALID_JSON_TYPE_MAPPING[param_items_type]):
-                        return False
-            elif param_type and not isinstance(json_dict[param], VALID_JSON_TYPE_MAPPING[param_type]):
-                return False
+                param_items = param_schema.get('items')
+                if param_items and 'type' in param_items:
+                    item_type = type_mapping.get(param_items['type'])
+                    if item_type is not None:
+                        for item in val:
+                            if not isinstance(item, item_type):
+                                return False
+            elif param_type:
+                type_expected = type_mapping.get(param_type)
+                if type_expected is not None and not isinstance(val, type_expected):
+                    return False
 
-            if isinstance(json_dict[param], dict) and 'properties' in param_schema:
-                nested_schema = param_schema
-                if not MistralStreamedResponse._validate_required_json_schema(json_dict[param], nested_schema):
+            # Nested object validation
+            if isinstance(val, dict) and 'properties' in param_schema:
+                if not MistralStreamedResponse._validate_required_json_schema(val, param_schema):
                     return False
 
         return True
