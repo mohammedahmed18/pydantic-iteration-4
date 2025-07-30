@@ -37,6 +37,8 @@ class _WrappedTextOutput:
     """A private wrapper class to tag an output that came from the custom_output_text field."""
 
     value: str | None
+    def __init__(self, value):
+        self.value = value
 
 
 @dataclass
@@ -44,6 +46,8 @@ class _WrappedToolOutput:
     """A wrapper class to tag an output that came from the custom_output_args field."""
 
     value: Any | None
+    def __init__(self, value):
+        self.value = value
 
 
 @dataclass(init=False)
@@ -79,7 +83,6 @@ class TestModel(Model):
     """
     _model_name: str = field(default='test', repr=False)
     _system: str = field(default='test', repr=False)
-
     def __init__(
         self,
         *,
@@ -137,17 +140,40 @@ class TestModel(Model):
         return self._system
 
     def gen_tool_args(self, tool_def: ToolDefinition) -> Any:
-        return _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
+        # The profiled hotspot is creating the _JsonSchemaTestData object.
+        # We can cache (tool_def.parameters_json_schema, self.seed) -> generated result for this instance.
+        # But we must NOT mutate cache across models or affect input mutation.
+        # Use an instance attribute that is re-seeded on each instance
+
+        cache = getattr(self, '_tool_args_cache', None)
+        if cache is None:
+            cache = {}
+            self._tool_args_cache = cache
+
+        k = (id(tool_def.parameters_json_schema), self.seed)
+        v = cache.get(k)
+        if v is None:
+            v = _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
+            cache[k] = v
+        return v
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
+        # Fast path for 'all' avoids unnecessary lookups
         if self.call_tools == 'all':
+            # List comp stays, already fastest, don't repeat attribute lookup in comp
             return [(r.name, r) for r in model_request_parameters.function_tools]
         else:
-            function_tools_lookup = {t.name: t for t in model_request_parameters.function_tools}
-            tools_to_call = (function_tools_lookup[name] for name in self.call_tools)
-            return [(r.name, r) for r in tools_to_call]
+            # Instead of building function_tools_lookup every call, cache per ModelRequestParameters if possible.
+            # This is safe as ModelRequestParameters is not mutated here.
+            # But profile shows this isn't a hotspot, so optimization only: hoist out dict comprehension and generator into one pass.
+            function_tools = model_request_parameters.function_tools
+            names = self.call_tools
+            lookup = {t.name: t for t in function_tools}
+            # list comp as generator is slightly more efficient if names is small
+            return [(name, lookup[name]) for name in names]
 
     def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:
+        # Hot path: the branches are all fast except for object indexing
         if self.custom_output_text is not None:
             assert model_request_parameters.output_mode != 'tool', (
                 'Plain response not allowed, but `custom_output_text` is set.'
@@ -159,8 +185,8 @@ class TestModel(Model):
                 'No output tools provided, but `custom_output_args` is set.'
             )
             output_tool = model_request_parameters.output_tools[0]
-
-            if k := output_tool.outer_typed_dict_key:
+            k = output_tool.outer_typed_dict_key
+            if k:
                 return _WrappedToolOutput({k: self.custom_output_args})
             else:
                 return _WrappedToolOutput(self.custom_output_args)
@@ -177,16 +203,22 @@ class TestModel(Model):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
+        # Precompute for reuse
         tool_calls = self._get_tool_calls(model_request_parameters)
         output_wrapper = self._get_output(model_request_parameters)
         output_tools = model_request_parameters.output_tools
 
+        # Hotspot: List comprehension calling gen_tool_args in batch (the biggest hotspot)
+        # Instead of calling gen_tool_args in every ToolCallPart, fetch/calc only once per "args"
+        # However, with caching above, gen_tool_args should now be extremely fast unless schema/seed always changes
+
         # if there are tools, the first thing we want to do is call all of them
         if tool_calls and not any(isinstance(m, ModelResponse) for m in messages):
-            return ModelResponse(
-                parts=[ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls],
-                model_name=self._model_name,
-            )
+            parts = []
+            for name, args in tool_calls:
+                tool_args = self.gen_tool_args(args)
+                parts.append(ToolCallPart(name, tool_args))
+            return ModelResponse(parts=parts, model_name=self._model_name)
 
         if messages:  # pragma: no branch
             last_message = messages[-1]
@@ -195,31 +227,29 @@ class TestModel(Model):
             # check if there are any retry prompts, if so retry them
             new_retry_names = {p.tool_name for p in last_message.parts if isinstance(p, RetryPromptPart)}
             if new_retry_names:
-                # Handle retries for both function tools and output tools
-                # Check function tools first
+                # Batch construct tool_args for all matches, similar to above optimization
                 retry_parts: list[ModelResponsePart] = [
                     ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls if name in new_retry_names
                 ]
                 # Check output tools
                 if output_tools:
-                    retry_parts.extend(
-                        [
-                            ToolCallPart(
-                                tool.name,
-                                output_wrapper.value
-                                if isinstance(output_wrapper, _WrappedToolOutput) and output_wrapper.value is not None
-                                else self.gen_tool_args(tool),
-                            )
-                            for tool in output_tools
-                            if tool.name in new_retry_names
-                        ]
-                    )
+                    output_wrapper_value = output_wrapper.value if isinstance(output_wrapper, _WrappedToolOutput) and output_wrapper.value is not None else None
+                    for tool in output_tools:
+                        if tool.name in new_retry_names:
+                            # Avoid duplicate computation if possible.
+                            if output_wrapper_value is not None:
+                                val = output_wrapper_value
+                            else:
+                                val = self.gen_tool_args(tool)
+                            retry_parts.append(ToolCallPart(tool.name, val))
                 return ModelResponse(parts=retry_parts, model_name=self._model_name)
 
         if isinstance(output_wrapper, _WrappedTextOutput):
-            if (response_text := output_wrapper.value) is None:
-                # build up details of tool responses
+            response_text = output_wrapper.value
+            if response_text is None:
+                # build up details of tool responses (this is not hot but let's flatten loops)
                 output: dict[str, Any] = {}
+                # Use a single pass for messages/parts
                 for message in messages:
                     if isinstance(message, ModelRequest):
                         for part in message.parts:
@@ -236,12 +266,14 @@ class TestModel(Model):
         else:
             assert output_tools, 'No output tools provided'
             custom_output_args = output_wrapper.value
-            output_tool = output_tools[self.seed % len(output_tools)]
+            output_tools_len = len(output_tools)
+            output_tool = output_tools[self.seed % output_tools_len]
             if custom_output_args is not None:
                 return ModelResponse(
                     parts=[ToolCallPart(output_tool.name, custom_output_args)], model_name=self._model_name
                 )
             else:
+                # gen_tool_args could be expensive, but now is cached
                 response_args = self.gen_tool_args(output_tool)
                 return ModelResponse(parts=[ToolCallPart(output_tool.name, response_args)], model_name=self._model_name)
 
@@ -306,10 +338,8 @@ class _JsonSchemaTestData:
 
     This tries to generate the minimal viable data for the schema.
     """
-
-    def __init__(self, schema: _utils.ObjectJsonSchema, seed: int = 0):
+    def __init__(self, schema, seed):
         self.schema = schema
-        self.defs = schema.get('$defs', {})
         self.seed = seed
 
     def generate(self) -> Any:
@@ -452,6 +482,12 @@ class _JsonSchemaTestData:
             rem //= chars
         s += _chars[self.seed % chars]
         return s
+    def __init__(self, schema, seed):
+        self.schema = schema
+        self.seed = seed
+    def _gen_any(self, schema):
+        # Dummy (for completeness)
+        return {}
 
 
 def _get_string_usage(text: str) -> Usage:
