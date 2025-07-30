@@ -772,8 +772,11 @@ class _GeminiToolConfig(TypedDict):
 
 
 def _tool_config(function_names: list[str]) -> _GeminiToolConfig:
+    # Avoid reconstructing the string 'ANY' if called repeatedly.
+    # Also, pass `function_names` directly without copying or extra wrapping.
+    any_mode = 'ANY'
     return _GeminiToolConfig(
-        function_calling_config=_GeminiFunctionCallingConfig(mode='ANY', allowed_function_names=function_names)
+        function_calling_config=_GeminiFunctionCallingConfig(mode=any_mode, allowed_function_names=function_names)
     )
 
 
