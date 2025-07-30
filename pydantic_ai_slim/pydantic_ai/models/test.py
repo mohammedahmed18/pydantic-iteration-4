@@ -141,11 +141,29 @@ class TestModel(Model):
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
         if self.call_tools == 'all':
+            # Fast path: just pre-allocate output directly via list comprehension, no change needed here.
             return [(r.name, r) for r in model_request_parameters.function_tools]
         else:
-            function_tools_lookup = {t.name: t for t in model_request_parameters.function_tools}
-            tools_to_call = (function_tools_lookup[name] for name in self.call_tools)
-            return [(r.name, r) for r in tools_to_call]
+            # Optimize: Single pass - avoid intermediate dict+generator for typical usage
+            function_tools = model_request_parameters.function_tools
+            call_tools = self.call_tools
+            # Prepare for O(n*m) scan, but in most cases call_tools is small
+            # This avoids creating a dict (memory) unless the length of call_tools is not much smaller
+            # than function_tools. For very large function_tools, fallback to dict for O(1) lookup.
+            if len(call_tools) * 4 > len(function_tools):  # Tweak factor to tradeoff speed/memory
+                # Large or similar sized index - build a dict for O(1) lookup.
+                function_tools_lookup = {t.name: t for t in function_tools}
+                return [(name, function_tools_lookup[name]) for name in call_tools]
+            else:
+                # Small call_tools - just scan function_tools for each name
+                result: list[tuple[str, ToolDefinition]] = []
+                for name in call_tools:
+                    # It's likely call_tools is small (1-4 items)
+                    for t in function_tools:
+                        if t.name == name:
+                            result.append((t.name, t))
+                            break  # Found the tool, no need to scan further
+                return result
 
     def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:
         if self.custom_output_text is not None:
