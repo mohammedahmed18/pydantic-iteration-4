@@ -100,9 +100,8 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
 
     def transform(self, schema: JsonSchema) -> JsonSchema:  # noqa C901
         # Remove unnecessary keys
-        schema.pop('title', None)
-        schema.pop('$schema', None)
-        schema.pop('discriminator', None)
+        for k in ('title', '$schema', 'discriminator'):
+            schema.pop(k, None)
 
         default = schema.get('default', _sentinel)
         if default is not _sentinel:
@@ -113,7 +112,8 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
             elif self.strict is None:  # pragma: no branch
                 self.is_strict_compatible = False
 
-        if schema_ref := schema.get('$ref'):
+        schema_ref = schema.get('$ref')
+        if schema_ref:
             if schema_ref == self.root_ref:
                 schema['$ref'] = '#'
             if len(schema) > 1:
@@ -121,19 +121,14 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
                 # So if there is a "description" field or any other extra info, we move the "$ref" into an "anyOf":
                 schema['anyOf'] = [{'$ref': schema.pop('$ref')}]
 
-        # Track strict-incompatible keys
-        incompatible_values: dict[str, Any] = {}
-        for key in _STRICT_INCOMPATIBLE_KEYS:
-            value = schema.get(key, _sentinel)
-            if value is not _sentinel:
-                incompatible_values[key] = value
+        # Track strict-incompatible keys, batch-get using dict comprehension
+        incompatible_values: dict[str, Any] = {key: schema[key] for key in _STRICT_INCOMPATIBLE_KEYS if key in schema}
         description = schema.get('description')
         if incompatible_values:
             if self.strict is True:
-                notes: list[str] = []
-                for key, value in incompatible_values.items():
+                notes = [f'{key}={value}' for key, value in incompatible_values.items()]
+                for key in incompatible_values:
                     schema.pop(key)
-                    notes.append(f'{key}={value}')
                 notes_string = ', '.join(notes)
                 schema['description'] = notes_string if not description else f'{description} ({notes_string})'
             elif self.strict is None:  # pragma: no branch
@@ -154,10 +149,12 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
 
                 # all properties are required
                 if 'properties' not in schema:
-                    schema['properties'] = dict[str, Any]()
-                schema['required'] = list(schema['properties'].keys())
+                    schema['properties'] = {}
+                props_keys = list(schema['properties'].keys())
+                schema['required'] = props_keys
 
             elif self.strict is None:
+                # Fast compound boolean test before the expensive loop
                 if (
                     schema.get('additionalProperties') is not False
                     or 'properties' not in schema
@@ -166,7 +163,22 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
                     self.is_strict_compatible = False
                 else:
                     required = schema['required']
-                    for k in schema['properties'].keys():
-                        if k not in required:
+                    # Optimize required membership checks for large property sets/lists
+                    if not isinstance(required, set):
+                        try:
+                            required_set = set(required)
+                        except Exception:
+                            required_set = set(required) if required else set()
+                    else:
+                        required_set = required
+
+                    # Only iterate if there's a possibility of missing required
+                    props = schema['properties']
+                    missing_required = False
+                    for k in props:
+                        if k not in required_set:
                             self.is_strict_compatible = False
+                            missing_required = True
+                            break  # One missing means not compatible, break early
+
         return schema
