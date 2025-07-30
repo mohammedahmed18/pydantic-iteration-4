@@ -457,3 +457,10 @@ class _JsonSchemaTestData:
 def _get_string_usage(text: str) -> Usage:
     response_tokens = _estimate_string_tokens(text)
     return Usage(response_tokens=response_tokens, total_tokens=response_tokens)
+
+
+# Fast token counter (equivalent to len(_TOKEN_SPLIT_RE.split(s.strip())))
+def count_tokens(s: str) -> int:
+    # translate all TOKEN_SPLIT_RE characters to spaces, then split
+    table = str.maketrans({c: ' ' for c in ' \n\r\t",.:'})   # covers all in regex char set
+    return len(s.translate(table).split())
