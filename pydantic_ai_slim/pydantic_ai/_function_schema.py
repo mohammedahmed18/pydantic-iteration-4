@@ -289,4 +289,14 @@ def _build_schema(
 
 def _is_call_ctx(annotation: Any) -> bool:
     """Return whether the annotation is the `RunContext` class, parameterized or not."""
-    return annotation is RunContext or get_origin(annotation) is RunContext
+    # Fast path: direct type check (most common case)
+    if annotation is RunContext:
+        return True
+    # Avoid get_origin overhead for objects that can't be parameterized
+    try:
+        if isinstance(annotation, type) and annotation is not RunContext:
+            return False
+    except Exception:
+        pass
+    # Fallback: check parameterized case
+    return get_origin(annotation) is RunContext
