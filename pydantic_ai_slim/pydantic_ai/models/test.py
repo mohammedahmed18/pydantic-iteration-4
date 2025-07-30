@@ -312,23 +312,37 @@ class _JsonSchemaTestData:
         self.defs = schema.get('$defs', {})
         self.seed = seed
 
+        # Compile regex only once
+        self._re_defs = re.compile(r'^#/\$defs/')
+
     def generate(self) -> Any:
         """Generate data for the JSON schema."""
         return self._gen_any(self.schema)
 
     def _gen_any(self, schema: dict[str, Any]) -> Any:
         """Generate data for any JSON Schema."""
-        if const := schema.get('const'):
+        # Inline variable access and avoid redundant global lookups
+
+        if 'const' in schema:
+            const = schema['const']
             return const
-        elif enum := schema.get('enum'):
+        elif 'enum' in schema:
+            enum = schema['enum']
             return enum[self.seed % len(enum)]
-        elif examples := schema.get('examples'):
+        elif 'examples' in schema:
+            examples = schema['examples']
             return examples[self.seed % len(examples)]
-        elif ref := schema.get('$ref'):
-            key = re.sub(r'^#/\$defs/', '', ref)
+        elif '$ref' in schema:
+            ref = schema['$ref']
+            # Much faster than re.sub for this simple prefix check
+            if ref.startswith('#/$defs/'):
+                key = ref[8:]
+            else:
+                key = ref
             js_def = self.defs[key]
             return self._gen_any(js_def)
-        elif any_of := schema.get('anyOf'):
+        elif 'anyOf' in schema:
+            any_of = schema['anyOf']
             return self._gen_any(any_of[self.seed % len(any_of)])
 
         type_ = schema.get('type')
@@ -417,28 +431,42 @@ class _JsonSchemaTestData:
 
     def _array_gen(self, schema: dict[str, Any]) -> list[Any]:
         """Generate an array from a JSON Schema array."""
+        # Hoist all schema accesses, avoid repeated get
         data: list[Any] = []
         unique_items = schema.get('uniqueItems')
-        if prefix_items := schema.get('prefixItems'):
-            for item in prefix_items:
-                data.append(self._gen_any(item))
-                if unique_items:
+        prefix_items = schema.get('prefixItems')
+        if prefix_items:
+            append = data.append
+            if unique_items:
+                for item in prefix_items:
+                    append(self._gen_any(item))
                     self.seed += 1
+            else:
+                for item in prefix_items:
+                    append(self._gen_any(item))
 
         items_schema = schema.get('items', {})
         min_items = schema.get('minItems', 0)
-        if min_items > len(data):
-            for _ in range(min_items - len(data)):
-                data.append(self._gen_any(items_schema))
-                if unique_items:
+        # Avoid unnecessary list length computation in loop
+        datalen = len(data)
+        n_add = min_items - datalen
+        if n_add > 0:
+            append = data.append
+            if unique_items:
+                for _ in range(n_add):
+                    append(self._gen_any(items_schema))
                     self.seed += 1
+            else:
+                for _ in range(n_add):
+                    append(self._gen_any(items_schema))
         elif items_schema:
-            # if there is an `items` schema, add an item unless it would break `maxItems` rule
             max_items = schema.get('maxItems')
             if max_items is None or max_items > len(data):
-                data.append(self._gen_any(items_schema))
                 if unique_items:
+                    data.append(self._gen_any(items_schema))
                     self.seed += 1
+                else:
+                    data.append(self._gen_any(items_schema))
 
         return data
 
