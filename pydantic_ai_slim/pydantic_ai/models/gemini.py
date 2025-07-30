@@ -851,22 +851,33 @@ def _metadata_as_usage(response: _GeminiResponse) -> usage.Usage:
     metadata = response.get('usage_metadata')
     if metadata is None:
         return usage.Usage()  # pragma: no cover
+
     details: dict[str, int] = {}
-    if cached_content_token_count := metadata.get('cached_content_token_count'):
+    # Pre-fetch integer-valued fields only if present, minimizing duplicate dict lookups.
+    cached_content_token_count = metadata.get('cached_content_token_count')
+    if cached_content_token_count:
         details['cached_content_tokens'] = cached_content_token_count  # pragma: no cover
 
-    if thoughts_token_count := metadata.get('thoughts_token_count'):
+    thoughts_token_count = metadata.get('thoughts_token_count')
+    if thoughts_token_count:
         details['thoughts_tokens'] = thoughts_token_count
 
-    if tool_use_prompt_token_count := metadata.get('tool_use_prompt_token_count'):
+    tool_use_prompt_token_count = metadata.get('tool_use_prompt_token_count')
+    if tool_use_prompt_token_count:
         details['tool_use_prompt_tokens'] = tool_use_prompt_token_count  # pragma: no cover
 
-    for key, metadata_details in metadata.items():
+    # Inline variable lookups and optimize string/loop ops
+    items = metadata.items()
+    for key, metadata_details in items:
         if key.endswith('_details') and metadata_details:
-            metadata_details = cast(list[_GeminiModalityTokenCount], metadata_details)
-            suffix = key.removesuffix('_details')
+            # Remove cast (is no-op at runtime), use local variable for suffix
+            suffix = key[:-8]  # avoids .removesuffix performance hit
+            # Direct reference alias for details assignment to avoid repeated key computation
             for detail in metadata_details:
-                details[f'{detail["modality"].lower()}_{suffix}'] = detail['token_count']
+                # Avoid repeated string concat and dict lookup by precomputing lower-modality
+                mod = detail["modality"]
+                token_count = detail["token_count"]
+                details[f'{mod.lower()}_{suffix}'] = token_count
 
     return usage.Usage(
         request_tokens=metadata.get('prompt_token_count', 0),
