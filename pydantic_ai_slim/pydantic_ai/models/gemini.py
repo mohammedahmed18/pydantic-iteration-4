@@ -46,6 +46,13 @@ from . import (
     download_item,
     get_user_agent,
 )
+"""Latest Gemini models."""
+"""Possible Gemini model names.
+
+Since Gemini supports a variety of date-stamped models, we explicitly list the latest models but
+allow any name in the type hints.
+See [the Gemini API docs](https://ai.google.dev/gemini-api/docs/models/gemini#model-variations) for a full list.
+"""
 
 LatestGeminiModelNames = Literal[
     'gemini-2.0-flash',
@@ -598,20 +605,29 @@ class _GeminiContent(TypedDict):
 
 def _content_model_response(m: ModelResponse) -> _GeminiContent:
     parts: list[_GeminiPartUnion] = []
+    tool_call_type = ToolCallPart
+    text_part_type = TextPart
+    thinking_part_type = ThinkingPart
+    append = parts.append  # Localize for performance
+    _GeminiTextPart_ = _GeminiTextPart  # Avoid repeated global lookups
+    _GeminiContent_ = _GeminiContent
+    _function_call_part_from_call_ = _function_call_part_from_call
+
     for item in m.parts:
-        if isinstance(item, ToolCallPart):
-            parts.append(_function_call_part_from_call(item))
-        elif isinstance(item, ThinkingPart):
+        t = type(item)
+        if t is tool_call_type:
+            append(_function_call_part_from_call_(item))
+        elif t is thinking_part_type:
             # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
             # please open an issue. The below code is the code to send thinking to the provider.
-            # parts.append(_GeminiTextPart(text=item.content, thought=True))
+            # append(_GeminiTextPart_(text=item.content, thought=True))
             pass
-        elif isinstance(item, TextPart):
+        elif t is text_part_type:
             if item.content:
-                parts.append(_GeminiTextPart(text=item.content))
+                append(_GeminiTextPart_(text=item.content))
         else:
             assert_never(item)
-    return _GeminiContent(role='model', parts=parts)
+    return _GeminiContent_(role='model', parts=parts)
 
 
 class _BasePart(TypedDict):
