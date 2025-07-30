@@ -99,41 +99,34 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
         return result
 
     def transform(self, schema: JsonSchema) -> JsonSchema:  # noqa C901
-        # Remove unnecessary keys
-        schema.pop('title', None)
-        schema.pop('$schema', None)
-        schema.pop('discriminator', None)
+        # Remove unnecessary keys using a single loop for lower overhead
+        for key in ('title', '$schema', 'discriminator'):
+            schema.pop(key, None)
 
         default = schema.get('default', _sentinel)
         if default is not _sentinel:
-            # the "default" keyword is not allowed in strict mode, but including it makes some Ollama models behave
-            # better, so we keep it around when not strict
             if self.strict is True:
                 schema.pop('default', None)
             elif self.strict is None:  # pragma: no branch
                 self.is_strict_compatible = False
 
-        if schema_ref := schema.get('$ref'):
+        schema_ref = schema.get('$ref')
+        if schema_ref:
             if schema_ref == self.root_ref:
                 schema['$ref'] = '#'
             if len(schema) > 1:
-                # OpenAI Strict mode doesn't support siblings to "$ref", but _does_ allow siblings to "anyOf".
-                # So if there is a "description" field or any other extra info, we move the "$ref" into an "anyOf":
+                # Move the "$ref" into an "anyOf" for OpenAI strict mode compatibility
                 schema['anyOf'] = [{'$ref': schema.pop('$ref')}]
 
-        # Track strict-incompatible keys
-        incompatible_values: dict[str, Any] = {}
-        for key in _STRICT_INCOMPATIBLE_KEYS:
-            value = schema.get(key, _sentinel)
-            if value is not _sentinel:
-                incompatible_values[key] = value
+        # Use a dictionary comprehension for collecting incompatible values for better perf
+        incompatible_values: dict[str, Any] = {key: schema[key] for key in _STRICT_INCOMPATIBLE_KEYS if key in schema}
         description = schema.get('description')
         if incompatible_values:
             if self.strict is True:
-                notes: list[str] = []
-                for key, value in incompatible_values.items():
+                # Use list comprehension for notes formatting for better speed and less loop overhead
+                notes = [f'{key}={value}' for key, value in incompatible_values.items()]
+                for key in incompatible_values:
                     schema.pop(key)
-                    notes.append(f'{key}={value}')
                 notes_string = ', '.join(notes)
                 schema['description'] = notes_string if not description else f'{description} ({notes_string})'
             elif self.strict is None:  # pragma: no branch
@@ -141,7 +134,6 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
 
         schema_type = schema.get('type')
         if 'oneOf' in schema:
-            # OpenAI does not support oneOf in strict mode
             if self.strict is True:
                 schema['anyOf'] = schema.pop('oneOf')
             else:
@@ -149,13 +141,12 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
 
         if schema_type == 'object':
             if self.strict is True:
-                # additional properties are disallowed
                 schema['additionalProperties'] = False
 
-                # all properties are required
-                if 'properties' not in schema:
-                    schema['properties'] = dict[str, Any]()
-                schema['required'] = list(schema['properties'].keys())
+                # Fast-path empty properties and avoid unnecessary checks
+                properties = schema.setdefault('properties', {})
+                # Use list constructor directly for required keys
+                schema['required'] = list(properties) if properties else []
 
             elif self.strict is None:
                 if (
@@ -166,7 +157,14 @@ class OpenAIJsonSchemaTransformer(JsonSchemaTransformer):
                     self.is_strict_compatible = False
                 else:
                     required = schema['required']
-                    for k in schema['properties'].keys():
-                        if k not in required:
-                            self.is_strict_compatible = False
+                    props = schema['properties']
+                    # Use set lookup for much faster membership test in large dicts
+                    required_set = set(required)
+                    if len(required_set) < len(props):
+                        # Only iterate if there's a chance something is missing
+                        for k in props:
+                            if k not in required_set:
+                                self.is_strict_compatible = False
+                                break
+
         return schema
