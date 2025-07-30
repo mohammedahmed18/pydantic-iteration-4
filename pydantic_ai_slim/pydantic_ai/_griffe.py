@@ -77,12 +77,24 @@ def doc_descriptions(
 
 def _infer_docstring_style(doc: str) -> DocstringStyle:
     """Simplistic docstring style inference."""
-    for pattern, replacements, style in _docstring_style_patterns:
-        matches = (
-            re.search(pattern.format(replacement), doc, re.IGNORECASE | re.MULTILINE) for replacement in replacements
-        )
-        if any(matches):
-            return style
+    # Precompile all format-patterns once for each (pattern, style)
+    compiled_patterns: list[tuple[list[re.Pattern], DocstringStyle]] = getattr(
+        _infer_docstring_style, '_compiled_patterns', None
+    )
+    if compiled_patterns is None:
+        compiled_patterns = []
+        for pattern, replacements, style in _docstring_style_patterns:
+            compiled = [
+                re.compile(pattern.format(replacement), re.IGNORECASE | re.MULTILINE)
+                for replacement in replacements
+            ]
+            compiled_patterns.append((compiled, style))
+        setattr(_infer_docstring_style, '_compiled_patterns', compiled_patterns)
+
+    for compiled, style in compiled_patterns:
+        for pat in compiled:
+            if pat.search(doc):
+                return style
     # fallback to google style
     return 'google'
 
