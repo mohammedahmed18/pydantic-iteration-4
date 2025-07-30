@@ -36,6 +36,7 @@ from ..messages import (
 from ..settings import ModelSettings
 from ..tools import ToolDefinition
 from . import Model, ModelRequestParameters, StreamedResponse, check_allow_model_requests
+from huggingface_hub import AsyncInferenceClient, ChatCompletionInputTool
 
 try:
     import aiohttp
@@ -121,10 +122,10 @@ class HuggingFaceModel(Model):
                 instance of `Provider[AsyncInferenceClient]`. If not provided, the other parameters will be used.
         """
         self._model_name = model_name
-        self._provider = provider
-        if isinstance(provider, str):
-            provider = infer_provider(provider)
-        self.client = provider.client
+        _provider_val = provider
+        if isinstance(_provider_val, str):
+            _provider_val = infer_provider(_provider_val)
+        self.client = _provider_val.client
 
     async def request(
         self,
@@ -330,18 +331,18 @@ class HuggingFaceModel(Model):
 
     @staticmethod
     def _map_tool_definition(f: ToolDefinition) -> ChatCompletionInputTool:
-        tool_param: ChatCompletionInputTool = ChatCompletionInputTool.parse_obj_as_instance(  # type: ignore
-            {
-                'type': 'function',
-                'function': {
-                    'name': f.name,
-                    'description': f.description,
-                    'parameters': f.parameters_json_schema,
-                },
-            }
-        )
+        # Construct the tool_param dict directly for optimal speed
+        fn_dict = {
+            'name': f.name,
+            'description': f.description,
+            'parameters': f.parameters_json_schema,
+        }
         if f.strict is not None:
-            tool_param['function']['strict'] = f.strict
+            fn_dict['strict'] = f.strict
+        tool_param: ChatCompletionInputTool = {
+            'type': 'function',
+            'function': fn_dict,
+        }
         return tool_param
 
     async def _map_user_message(
