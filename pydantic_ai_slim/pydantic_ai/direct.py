@@ -21,6 +21,7 @@ from pydantic_graph._utils import get_event_loop as _get_event_loop
 
 from . import agent, messages, models, settings
 from .models import StreamedResponse, instrumented as instrumented_models
+from functools import lru_cache
 
 __all__ = (
     'model_request',
@@ -188,11 +189,24 @@ def model_request_stream(
     Returns:
         A [stream response][pydantic_ai.models.StreamedResponse] async context manager.
     """
-    model_instance = _prepare_model(model, instrument)
+    cache_key = _prepare_model_cache_key(model, instrument)
+    if cache_key is not None:
+        model_instance = _prepare_model_cached(model, instrument)
+    else:
+        model_instance = _prepare_model(model, instrument)
+
+    # Reuse default instance for model_request_parameters if user passed None
+    # Avoids overhead of calling the constructor each time
+    params = model_request_parameters if model_request_parameters is not None else _DEFAULT_MODEL_REQUEST_PARAMETERS
+
+    # Inline customize_request_parameters to avoid a call frame if using default behavior
+    if type(model_instance).customize_request_parameters is models.Model.customize_request_parameters:
+        customized_params = params
+    else:  # Only call override if subclassed
+        customized_params = model_instance.customize_request_parameters(params)
+
     return model_instance.request_stream(
-        messages,
-        model_settings,
-        model_instance.customize_request_parameters(model_request_parameters or models.ModelRequestParameters()),
+        messages, model_settings, customized_params
     )
 
 
@@ -263,6 +277,18 @@ def _prepare_model(
         instrument = agent.Agent._instrument_default  # pyright: ignore[reportPrivateUsage]
 
     return instrumented_models.instrument_model(model_instance, instrument)
+
+# Caching is only safe if the inputs are hashable (e.g. str model, not instance)
+def _prepare_model_cache_key(model, instrument):
+    if isinstance(model, (str, models.KnownModelName)) and (
+        isinstance(instrument, (bool, type(None))) or hasattr(instrument, "__hash__")
+    ):
+        return (model, instrument)
+    return None
+
+@lru_cache(maxsize=8)
+def _prepare_model_cached(model, instrument):
+    return _prepare_model(model, instrument)
 
 
 @dataclass
@@ -379,3 +405,5 @@ class StreamedResponseSync:
     def timestamp(self) -> datetime:
         """Get the timestamp of the response."""
         return self._ensure_stream_ready().timestamp
+
+_DEFAULT_MODEL_REQUEST_PARAMETERS = models.ModelRequestParameters()
