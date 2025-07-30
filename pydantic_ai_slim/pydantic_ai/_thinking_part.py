@@ -16,21 +16,32 @@ def split_content_into_text_and_thinking(content: str) -> list[ThinkingPart | Te
     something else, we just match the tag to make it easier for other models that don't support the `ThinkingPart`.
     """
     parts: list[ThinkingPart | TextPart] = []
+    pos = 0
+    clen = len(content)
+    stt_len = len(START_THINK_TAG)
+    ett_len = len(END_THINK_TAG)
 
-    start_index = content.find(START_THINK_TAG)
-    while start_index >= 0:
-        before_think, content = content[:start_index], content[start_index + len(START_THINK_TAG) :]
-        if before_think:
-            parts.append(TextPart(content=before_think))
-        end_index = content.find(END_THINK_TAG)
-        if end_index >= 0:
-            think_content, content = content[:end_index], content[end_index + len(END_THINK_TAG) :]
-            parts.append(ThinkingPart(content=think_content))
+    while True:
+        start_index = content.find(START_THINK_TAG, pos)
+        if start_index == -1:
+            if pos < clen:
+                # Remaining text after last <think>
+                parts.append(TextPart(content=content[pos:]))
+            break
+
+        if start_index > pos:
+            # Text before <think>
+            parts.append(TextPart(content=content[pos:start_index]))
+
+        think_start = start_index + stt_len
+        end_index = content.find(END_THINK_TAG, think_start)
+        if end_index == -1:
+            # No ending tag: treat the rest as plain text
+            parts.append(TextPart(content=content[think_start:]))
+            break
         else:
-            # We lose the `<think>` tag, but it shouldn't matter.
-            parts.append(TextPart(content=content))
-            content = ''
-        start_index = content.find(START_THINK_TAG)
-    if content:
-        parts.append(TextPart(content=content))
+            # Between start and end tag is ThinkingPart
+            parts.append(ThinkingPart(content=content[think_start:end_index]))
+            pos = end_index + ett_len  # move past the end tag
+
     return parts
