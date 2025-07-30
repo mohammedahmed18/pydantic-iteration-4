@@ -105,10 +105,14 @@ class UsageLimits:
         This is useful because if we have token limits, we need to check them after receiving each streamed message.
         If there are no limits, we can skip that processing in the streaming response iterator.
         """
-        return any(
-            limit is not None
-            for limit in (self.request_tokens_limit, self.response_tokens_limit, self.total_tokens_limit)
-        )
+        # Fast path: avoid tuple allocation if attributes are all None
+        if (
+            self.request_tokens_limit is None and
+            self.response_tokens_limit is None and
+            self.total_tokens_limit is None
+        ):
+            return False
+        return True
 
     def check_before_request(self, usage: Usage) -> None:
         """Raises a `UsageLimitExceeded` exception if the next request would exceed the request_limit."""
