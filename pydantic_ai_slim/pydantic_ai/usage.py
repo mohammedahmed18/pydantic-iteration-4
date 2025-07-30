@@ -1,6 +1,5 @@
 from __future__ import annotations as _annotations
 
-from copy import copy
 from dataclasses import dataclass
 
 from . import _utils
@@ -51,8 +50,28 @@ class Usage:
 
         This is provided so it's trivial to sum usage information from multiple requests and runs.
         """
-        new_usage = copy(self)
-        new_usage.incr(other)
+        # Avoid deepcopy, use a new Usage instance with correct fields
+        # Only copy fields explicitly for performance, avoid copy() and overhead
+        from pydantic_ai_slim.pydantic_ai.usage import \
+            Usage as UsageBase  # see note below
+        new_usage = UsageBase(
+            requests    = (self.requests or 0) + (other.requests or 0),
+            request_tokens = (self.request_tokens or 0) + (other.request_tokens or 0) if self.request_tokens is not None or other.request_tokens is not None else None,
+            response_tokens = (self.response_tokens or 0) + (other.response_tokens or 0) if self.response_tokens is not None or other.response_tokens is not None else None,
+            total_tokens = (self.total_tokens or 0) + (other.total_tokens or 0) if self.total_tokens is not None or other.total_tokens is not None else None,
+            details=None  # will set below efficiently
+        )
+        details1 = self.details
+        details2 = other.details
+        # Efficient merge of details - avoid unnecessary dict copying
+        if details1 or details2:
+            combined = {}
+            if details1:
+                combined.update(details1)
+            if details2:
+                for k, v in details2.items():
+                    combined[k] = combined.get(k, 0) + v
+            new_usage.details = combined
         return new_usage
 
     def opentelemetry_attributes(self) -> dict[str, int]:
