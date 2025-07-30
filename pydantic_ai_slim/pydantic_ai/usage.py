@@ -35,23 +35,40 @@ class Usage:
         Args:
             incr_usage: The usage to increment by.
         """
-        for f in 'requests', 'request_tokens', 'response_tokens', 'total_tokens':
-            self_value = getattr(self, f)
-            other_value = getattr(incr_usage, f)
-            if self_value is not None or other_value is not None:
-                setattr(self, f, (self_value or 0) + (other_value or 0))
+        # Unroll the field additions for performance
+        self.requests = (self.requests or 0) + (incr_usage.requests or 0)
+        if self.request_tokens is not None or incr_usage.request_tokens is not None:
+            self.request_tokens = (self.request_tokens or 0) + (incr_usage.request_tokens or 0)
+        if self.response_tokens is not None or incr_usage.response_tokens is not None:
+            self.response_tokens = (self.response_tokens or 0) + (incr_usage.response_tokens or 0)
+        if self.total_tokens is not None or incr_usage.total_tokens is not None:
+            self.total_tokens = (self.total_tokens or 0) + (incr_usage.total_tokens or 0)
 
         if incr_usage.details:
-            self.details = self.details or {}
-            for key, value in incr_usage.details.items():
-                self.details[key] = self.details.get(key, 0) + value
+            if self.details is None:
+                # If self.details is None, just copy incr_usage.details (optimized path)
+                self.details = incr_usage.details.copy()
+            else:
+                for k, v in incr_usage.details.items():
+                    old_v = self.details.get(k)
+                    if old_v is None:
+                        self.details[k] = v
+                    else:
+                        self.details[k] = old_v + v
 
     def __add__(self, other: Usage) -> Usage:
         """Add two Usages together.
 
         This is provided so it's trivial to sum usage information from multiple requests and runs.
         """
-        new_usage = copy(self)
+        # Manual fast copy for dataclass fields, avoids generic copy()
+        new_usage = Usage(
+            requests=self.requests,
+            request_tokens=self.request_tokens,
+            response_tokens=self.response_tokens,
+            total_tokens=self.total_tokens,
+            details=self.details.copy() if self.details is not None else None
+        )
         new_usage.incr(other)
         return new_usage
 
