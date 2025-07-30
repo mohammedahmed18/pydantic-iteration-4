@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from rich.console import Console
+from rich.syntax import Syntax
 from typing_inspection.introspection import get_literal_values
 
 from . import __version__
@@ -317,23 +319,7 @@ def handle_slash_command(
     ident_prompt: str, messages: list[ModelMessage], multiline: bool, console: Console, code_theme: str
 ) -> tuple[int | None, bool]:
     if ident_prompt == '/markdown':
-        try:
-            parts = messages[-1].parts
-        except IndexError:
-            console.print('[dim]No markdown output available.[/dim]')
-        else:
-            console.print('[dim]Markdown output of last question:[/dim]\n')
-            for part in parts:
-                if part.part_kind == 'text':
-                    console.print(
-                        Syntax(
-                            part.content,
-                            lexer='markdown',
-                            theme=code_theme,
-                            word_wrap=True,
-                            background_color='default',
-                        )
-                    )
+        _print_markdown_last_message(messages, console, code_theme)
 
     elif ident_prompt == '/multiline':
         multiline = not multiline
@@ -344,9 +330,37 @@ def handle_slash_command(
         else:
             console.print('Disabling multiline mode.')
         return None, multiline
+
     elif ident_prompt == '/exit':
         console.print('[dim]Exiting…[/dim]')
         return 0, multiline
+
     else:
         console.print(f'[red]Unknown command[/red] [magenta]`{ident_prompt}`[/magenta]')
     return None, multiline
+
+
+def _print_markdown_last_message(messages, console, code_theme):
+    try:
+        parts = messages[-1].parts
+    except IndexError:
+        console.print('[dim]No markdown output available.[/dim]')
+        return
+    console.print('[dim]Markdown output of last question:[/dim]\n')
+
+    # Optimize by batching syntax blocks: Pre-construct Syntax objects for printing all at once.
+    syntax_list = [
+        Syntax(
+            part.content,
+            lexer='markdown',
+            theme=code_theme,
+            word_wrap=True,
+            background_color='default',
+        )
+        for part in parts
+        if part.part_kind == 'text'
+    ]
+    # Print all Syntax blocks at once ("rich" can do: console.print(*objs), it's faster than multiple `print`)
+    # Temporarily, this is not a breaking change; otherwise, fallback to separate prints
+    if syntax_list:
+        console.print(*syntax_list, sep="\n")
