@@ -17,20 +17,30 @@ def split_content_into_text_and_thinking(content: str) -> list[ThinkingPart | Te
     """
     parts: list[ThinkingPart | TextPart] = []
 
-    start_index = content.find(START_THINK_TAG)
-    while start_index >= 0:
-        before_think, content = content[:start_index], content[start_index + len(START_THINK_TAG) :]
-        if before_think:
-            parts.append(TextPart(content=before_think))
-        end_index = content.find(END_THINK_TAG)
+    s, e = START_THINK_TAG, END_THINK_TAG
+    pos = 0
+    len_s = len(s)
+    len_e = len(e)
+    content_len = len(content)
+
+    while True:
+        start_index = content.find(s, pos)
+        if start_index < 0:
+            break
+        # Text before <think>
+        if start_index > pos:
+            parts.append(TextPart(content=content[pos:start_index]))
+        # Move past <think>
+        t_start = start_index + len_s
+        end_index = content.find(e, t_start)
         if end_index >= 0:
-            think_content, content = content[:end_index], content[end_index + len(END_THINK_TAG) :]
-            parts.append(ThinkingPart(content=think_content))
+            # Content inside <think>
+            parts.append(ThinkingPart(content=content[t_start:end_index]))
+            pos = end_index + len_e
         else:
-            # We lose the `<think>` tag, but it shouldn't matter.
-            parts.append(TextPart(content=content))
-            content = ''
-        start_index = content.find(START_THINK_TAG)
-    if content:
-        parts.append(TextPart(content=content))
+            # No closing tag found, take the rest as text
+            parts.append(TextPart(content=content[t_start:]))
+            return parts  # no more valid tags possible
+    if pos < content_len:
+        parts.append(TextPart(content=content[pos:]))
     return parts
