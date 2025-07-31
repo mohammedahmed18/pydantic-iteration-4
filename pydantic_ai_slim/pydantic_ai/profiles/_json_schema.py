@@ -28,7 +28,6 @@ class JsonSchemaTransformer(ABC):
         simplify_nullable_unions: bool = False,
     ):
         self.schema = schema
-
         self.strict = strict
         self.is_strict_compatible = True  # Can be set to False by subclasses to set `strict` on `ToolDefinition` when set not set by user explicitly
 
@@ -161,18 +160,18 @@ class JsonSchemaTransformer(ABC):
         # TODO: Should we move this to relevant subclasses? Or is it worth keeping here to make reuse easier?
         if len(cases) == 2 and {'type': 'null'} in cases:
             # Find the non-null schema
-            non_null_schema = next(
-                (item for item in cases if item != {'type': 'null'}),
-                None,
-            )
-            if non_null_schema:
-                # Create a new schema based on the non-null part, mark as nullable
-                new_schema = deepcopy(non_null_schema)
-                new_schema['nullable'] = True
-                return [new_schema]
-            else:  # pragma: no cover
-                # they are both null, so just return one of them
+            for item in cases:
+                if item != {'type': 'null'}:
+                    non_null_schema = item
+                    break
+            else:
+                # They are both null, so just return one of them
                 return [cases[0]]
+
+            # Shallow copy is enough because these are always new dicts created in the schema-building process
+            new_schema = dict(non_null_schema)
+            new_schema['nullable'] = True
+            return [new_schema]
 
         return cases
 
