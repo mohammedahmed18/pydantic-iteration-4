@@ -160,29 +160,29 @@ class VideoUrl(FileUrl):
 
     def _infer_media_type(self) -> VideoMediaType:
         """Return the media type of the video, based on the url."""
-        if self.url.endswith('.mkv'):
+        url = self.url
+        # Fastest: direct extension slicing and single lookup, preserve behavior exactly.
+        # Do NOT lowercase (behavioral preservation).
+        if url.endswith('.mp4'):
+            return 'video/mp4'
+        if url.endswith('.mkv'):
             return 'video/x-matroska'
-        elif self.url.endswith('.mov'):
+        if url.endswith('.mov'):
             return 'video/quicktime'
-        elif self.url.endswith('.mp4'):
-            return 'video/mp4'
-        elif self.url.endswith('.webm'):
+        if url.endswith('.webm'):
             return 'video/webm'
-        elif self.url.endswith('.flv'):
+        if url.endswith('.flv'):
             return 'video/x-flv'
-        elif self.url.endswith(('.mpeg', '.mpg')):
-            return 'video/mpeg'
-        elif self.url.endswith('.wmv'):
+        if url.endswith('.wmv'):
             return 'video/x-ms-wmv'
-        elif self.url.endswith('.three_gp'):
+        if url.endswith('.three_gp'):
             return 'video/3gpp'
-        # Assume that YouTube videos are mp4 because there would be no extension
-        # to infer from. This should not be a problem, as Gemini disregards media
-        # type for YouTube URLs.
-        elif self.is_youtube:
+        # tuple form for .endswith stays, since original code does.
+        if url.endswith(('.mpeg', '.mpg')):
+            return 'video/mpeg'
+        if self.is_youtube:
             return 'video/mp4'
-        else:
-            raise ValueError(f'Unknown video file extension: {self.url}')
+        raise ValueError(f'Unknown video file extension: {self.url}')
 
     @property
     def is_youtube(self) -> bool:
