@@ -2,7 +2,7 @@ from typing import Any, Protocol
 
 from pydantic.json_schema import JsonSchemaValue
 
-from pydantic_ai.tools import Tool
+from pydantic_ai.tools import Tool as _OriginalTool, Tool
 from pydantic_ai.toolsets.function import FunctionToolset
 
 
@@ -38,23 +38,32 @@ def tool_from_langchain(langchain_tool: LangChainTool) -> Tool:
     """
     function_name = langchain_tool.name
     function_description = langchain_tool.description
-    inputs = langchain_tool.args.copy()
-    required = sorted({name for name, detail in inputs.items() if 'default' not in detail})
+    inputs = langchain_tool.args  # don't use .copy() -- we read, not mutate
+
+    # Use tuple instead of set, and sorted for consistent 'required'
+    required = sorted(
+        name for name, detail in inputs.items() if 'default' not in detail
+    )
+
+    # Avoid unnecessary dict creation: set directly if not present
     schema: JsonSchemaValue = langchain_tool.get_input_jsonschema()
     if 'additionalProperties' not in schema:
         schema['additionalProperties'] = False
     if required:
         schema['required'] = required
 
+    # Build defaults dict exactly once
     defaults = {name: detail['default'] for name, detail in inputs.items() if 'default' in detail}
 
-    # restructures the arguments to match langchain tool run
+    # Optimize: avoid | operator per call, just copy+update
     def proxy(*args: Any, **kwargs: Any) -> str:
         assert not args, 'This should always be called with kwargs'
-        kwargs = defaults | kwargs
-        return langchain_tool.run(kwargs)
+        # Fast dict merge
+        merged = defaults.copy()
+        merged.update(kwargs)
+        return langchain_tool.run(merged)
 
-    return Tool.from_schema(
+    return _OriginalTool.from_schema(
         function=proxy,
         name=function_name,
         description=function_description,
