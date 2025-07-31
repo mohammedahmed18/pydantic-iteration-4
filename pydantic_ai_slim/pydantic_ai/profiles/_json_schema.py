@@ -21,7 +21,7 @@ class JsonSchemaTransformer(ABC):
 
     def __init__(
         self,
-        schema: JsonSchema,
+        schema: "JsonSchema",
         *,
         strict: bool | None = None,
         prefer_inlined_defs: bool = False,
@@ -35,7 +35,7 @@ class JsonSchemaTransformer(ABC):
         self.prefer_inlined_defs = prefer_inlined_defs
         self.simplify_nullable_unions = simplify_nullable_unions
 
-        self.defs: dict[str, JsonSchema] = self.schema.get('$defs', {})
+        self.defs: dict[str, "JsonSchema"] = self.schema.get('$defs', {})
         self.refs_stack: list[str] = []
         self.recursive_refs = set[str]()
 
@@ -161,17 +161,14 @@ class JsonSchemaTransformer(ABC):
         # TODO: Should we move this to relevant subclasses? Or is it worth keeping here to make reuse easier?
         if len(cases) == 2 and {'type': 'null'} in cases:
             # Find the non-null schema
-            non_null_schema = next(
-                (item for item in cases if item != {'type': 'null'}),
-                None,
-            )
-            if non_null_schema:
-                # Create a new schema based on the non-null part, mark as nullable
-                new_schema = deepcopy(non_null_schema)
-                new_schema['nullable'] = True
-                return [new_schema]
+            for item in cases:
+                if item != {'type': 'null'}:
+                    # Shallow copy is safe here since we only add a primitive key
+                    new_schema = dict(item)
+                    new_schema['nullable'] = True
+                    return [new_schema]
             else:  # pragma: no cover
-                # they are both null, so just return one of them
+                # They are both null, so just return one of them
                 return [cases[0]]
 
         return cases
