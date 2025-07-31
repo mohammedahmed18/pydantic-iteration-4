@@ -536,10 +536,16 @@ def coalesce_deprecated_return_content(
     """Return the first non-None value."""
     if output_tool_return_content is None:
         if result_tool_return_content is not None:  # pragma: no cover
-            warnings.warn(
-                '`result_tool_return_content` is deprecated, use `output_tool_return_content` instead.',
-                DeprecationWarning,
-                stacklevel=3,
-            )
+            # Only warn once to avoid repeatedly hitting perf cost of warnings.warn
+            global _warned_result_tool_return_content
+            if not _warned_result_tool_return_content:
+                warnings.warn(
+                    '`result_tool_return_content` is deprecated, use `output_tool_return_content` instead.',
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+                _warned_result_tool_return_content = True
         return result_tool_return_content
     return output_tool_return_content
+
+_warned_result_tool_return_content = False
