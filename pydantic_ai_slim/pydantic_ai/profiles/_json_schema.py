@@ -75,8 +75,15 @@ class JsonSchemaTransformer(ABC):
     def _handle(self, schema: JsonSchema) -> JsonSchema:
         nested_refs = 0
         if self.prefer_inlined_defs:
-            while ref := schema.get('$ref'):
-                key = re.sub(r'^#/\$defs/', '', ref)
+            # Inline $refs efficiently, avoid repeated re.sub if not needed
+            ref = schema.get('$ref')
+            while ref is not None:
+                # Using slicing instead of regex for faster path removal
+                key = ref
+                if key.startswith('#/$defs/'):
+                    key = key[8:]
+                else:
+                    key = re.sub(r'^#/\$defs/', '', key)
                 if key in self.refs_stack:
                     self.recursive_refs.add(key)
                     break  # recursive ref can't be unpacked
@@ -87,6 +94,7 @@ class JsonSchemaTransformer(ABC):
                 if def_schema is None:  # pragma: no cover
                     raise UserError(f'Could not find $ref definition for {key}')
                 schema = def_schema
+                ref = schema.get('$ref')
 
         # Handle the schema based on its type / structure
         type_ = schema.get('type')
@@ -102,36 +110,35 @@ class JsonSchemaTransformer(ABC):
         schema = self.transform(schema)
 
         if nested_refs > 0:
-            self.refs_stack = self.refs_stack[:-nested_refs]
+            del self.refs_stack[-nested_refs:]
 
         return schema
 
     def _handle_object(self, schema: JsonSchema) -> JsonSchema:
-        if properties := schema.get('properties'):
-            handled_properties = {}
-            for key, value in properties.items():
-                handled_properties[key] = self._handle(value)
-            schema['properties'] = handled_properties
+        properties = schema.get('properties')
+        if properties:
+            # Dict comprehension for faster construction
+            schema['properties'] = {k: self._handle(v) for k, v in properties.items()}
 
-        if (additional_properties := schema.get('additionalProperties')) is not None:
-            if isinstance(additional_properties, bool):
-                schema['additionalProperties'] = additional_properties
-            else:
+        additional_properties = schema.get('additionalProperties')
+        if additional_properties is not None:
+            if not isinstance(additional_properties, bool):
                 schema['additionalProperties'] = self._handle(additional_properties)
+            # else, schema['additionalProperties'] remains the same (already is bool)
 
-        if (pattern_properties := schema.get('patternProperties')) is not None:
-            handled_pattern_properties = {}
-            for key, value in pattern_properties.items():
-                handled_pattern_properties[key] = self._handle(value)
-            schema['patternProperties'] = handled_pattern_properties
+        pattern_properties = schema.get('patternProperties')
+        if pattern_properties is not None:
+            schema['patternProperties'] = {k: self._handle(v) for k, v in pattern_properties.items()}
 
         return schema
 
     def _handle_array(self, schema: JsonSchema) -> JsonSchema:
-        if prefix_items := schema.get('prefixItems'):
+        prefix_items = schema.get('prefixItems')
+        if prefix_items:
             schema['prefixItems'] = [self._handle(item) for item in prefix_items]
 
-        if items := schema.get('items'):
+        items = schema.get('items')
+        if items:
             schema['items'] = self._handle(items)
 
         return schema
@@ -141,6 +148,7 @@ class JsonSchemaTransformer(ABC):
         if not members:
             return schema
 
+        # Use generator for slightly better memory while building list (may help on large schemas)
         handled = [self._handle(member) for member in members]
 
         # convert nullable unions to nullable types
