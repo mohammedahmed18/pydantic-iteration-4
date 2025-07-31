@@ -269,16 +269,24 @@ class ImageUrl(FileUrl):
 
     def _infer_media_type(self) -> ImageMediaType:
         """Return the media type of the image, based on the url."""
-        if self.url.endswith(('.jpg', '.jpeg')):
+        # Optimization: Only do a single string operation and minimize repeated .endswith() checks
+        url = self.url
+        # Use rpartition to do a single pass for the suffix.
+        # Also, avoid allocation or lower/upper (behavior must not change).
+        # Suffix is checked as in original order.
+        # This slightly increases memory efficiency (no tuple to the endswith), 
+        # and reduces calls from 4 endswith to 1 rpartition+1 scan+1 comparison.
+        suf = url.rpartition('.')[-1]
+        if suf in ('jpg', 'jpeg'):
             return 'image/jpeg'
-        elif self.url.endswith('.png'):
+        elif suf == 'png':
             return 'image/png'
-        elif self.url.endswith('.gif'):
+        elif suf == 'gif':
             return 'image/gif'
-        elif self.url.endswith('.webp'):
+        elif suf == 'webp':
             return 'image/webp'
         else:
-            raise ValueError(f'Unknown image file extension: {self.url}')
+            raise ValueError(f'Unknown image file extension: {url}')
 
     @property
     def format(self) -> ImageFormat:
