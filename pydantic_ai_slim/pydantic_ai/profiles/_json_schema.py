@@ -73,20 +73,43 @@ class JsonSchemaTransformer(ABC):
         return handled
 
     def _handle(self, schema: JsonSchema) -> JsonSchema:
-        nested_refs = 0
-        if self.prefer_inlined_defs:
-            while ref := schema.get('$ref'):
-                key = re.sub(r'^#/\$defs/', '', ref)
-                if key in self.refs_stack:
-                    self.recursive_refs.add(key)
-                    break  # recursive ref can't be unpacked
-                self.refs_stack.append(key)
-                nested_refs += 1
+        # Fast path: no inlining desired, or not a $ref
+        if not self.prefer_inlined_defs or '$ref' not in schema:
+            # Handle the schema based on its type / structure
+            type_ = schema.get('type')
+            if type_ == 'object':
+                schema = self._handle_object(schema)
+            elif type_ == 'array':
+                schema = self._handle_array(schema)
+            elif type_ is None:
+                schema = self._handle_union(schema, 'anyOf')
+                schema = self._handle_union(schema, 'oneOf')
 
-                def_schema = self.defs.get(key)
-                if def_schema is None:  # pragma: no cover
-                    raise UserError(f'Could not find $ref definition for {key}')
-                schema = def_schema
+            # Apply the base transform
+            return self.transform(schema)
+
+        # Inlining path: optimize $ref dereferencing loop
+        refs_stack_append = self.refs_stack.append
+        refs_stack_pop = self.refs_stack.pop
+        defs_get = self.defs.get
+        nested_refs = 0
+        key = None
+
+        while True:
+            ref = schema.get('$ref')
+            if not ref:
+                break
+            key = re.sub(r'^#/\$defs/', '', ref)
+            if key in self.refs_stack:
+                self.recursive_refs.add(key)
+                break  # recursive ref can't be unpacked
+            refs_stack_append(key)
+            nested_refs += 1
+
+            def_schema = defs_get(key)
+            if def_schema is None:  # pragma: no cover
+                raise UserError(f'Could not find $ref definition for {key}')
+            schema = def_schema
 
         # Handle the schema based on its type / structure
         type_ = schema.get('type')
@@ -102,7 +125,7 @@ class JsonSchemaTransformer(ABC):
         schema = self.transform(schema)
 
         if nested_refs > 0:
-            self.refs_stack = self.refs_stack[:-nested_refs]
+            del self.refs_stack[-nested_refs:]
 
         return schema
 
@@ -128,10 +151,14 @@ class JsonSchemaTransformer(ABC):
         return schema
 
     def _handle_array(self, schema: JsonSchema) -> JsonSchema:
-        if prefix_items := schema.get('prefixItems'):
+        # Minimize attribute lookups
+        prefix_items = schema.get('prefixItems')
+        if prefix_items:
             schema['prefixItems'] = [self._handle(item) for item in prefix_items]
 
-        if items := schema.get('items'):
+        # 'items' may co-exist with 'prefixItems' per spec
+        items = schema.get('items')
+        if items:
             schema['items'] = self._handle(items)
 
         return schema
