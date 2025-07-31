@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import FunctionCallingConfigDict, FunctionCallingConfigMode, ToolConfigDict
 
 try:
     from google import genai
@@ -542,8 +543,10 @@ def _function_declaration_from_tool(tool: ToolDefinition) -> FunctionDeclaration
 
 
 def _tool_config(function_names: list[str]) -> ToolConfigDict:
-    mode = FunctionCallingConfigMode.ANY
-    function_calling_config = FunctionCallingConfigDict(mode=mode, allowed_function_names=function_names)
+    function_calling_config = FunctionCallingConfigDict(
+        mode=_MODE_ANY,
+        allowed_function_names=function_names
+    )
     return ToolConfigDict(function_calling_config=function_calling_config)
 
 
@@ -575,3 +578,5 @@ def _metadata_as_usage(response: GenerateContentResponse) -> usage.Usage:
         total_tokens=metadata.get('total_token_count', 0),
         details=details,
     )
+
+_MODE_ANY = FunctionCallingConfigMode.ANY
