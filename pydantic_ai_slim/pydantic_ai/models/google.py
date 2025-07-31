@@ -42,6 +42,9 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google import genai
+from google.genai.types import FunctionCallingConfigDict, FunctionCallingConfigMode, ToolConfigDict, ToolDict
+from pydantic_ai_slim.pydantic_ai.providers.google import GoogleProvider
 
 try:
     from google import genai
@@ -139,7 +142,7 @@ class GoogleModel(Model):
 
     def __init__(
         self,
-        model_name: GoogleModelName,
+        model_name: 'GoogleModelName',
         *,
         provider: Literal['google-gla', 'google-vertex'] | Provider[genai.Client] = 'google-gla',
         profile: ModelProfileSpec | None = None,
@@ -219,11 +222,13 @@ class GoogleModel(Model):
         self, model_request_parameters: ModelRequestParameters, tools: list[ToolDict] | None
     ) -> ToolConfigDict | None:
         if not model_request_parameters.allow_text_output and tools:
-            names: list[str] = []
-            for tool in tools:
-                for function_declaration in tool.get('function_declarations') or []:
-                    if name := function_declaration.get('name'):  # pragma: no branch
-                        names.append(name)
+            # Optimized: flatten all function_declarations and filter in a single pass with a genexp
+            names = [
+                function_declaration['name']
+                for tool in tools
+                for function_declaration in (tool.get('function_declarations') or [])
+                if 'name' in function_declaration
+            ]
             return _tool_config(names)
         else:
             return None
