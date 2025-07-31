@@ -366,7 +366,6 @@ class OutputSchema(BaseOutputSchema[OutputDataT], ABC):
 class OutputSchemaWithoutMode(BaseOutputSchema[OutputDataT]):
     processor: ObjectOutputProcessor[OutputDataT] | UnionOutputProcessor[OutputDataT]
     _toolset: OutputToolset[Any] | None
-
     def __init__(
         self,
         processor: ObjectOutputProcessor[OutputDataT] | UnionOutputProcessor[OutputDataT],
@@ -376,20 +375,31 @@ class OutputSchemaWithoutMode(BaseOutputSchema[OutputDataT]):
         super().__init__(allows_deferred_tool_calls)
         self.processor = processor
         self._toolset = toolset
+        # Internal cache for constructed schemas
+        self._schema_cache = {}
 
     def with_default_mode(self, mode: StructuredOutputMode) -> OutputSchema[OutputDataT]:
+        # Fast path: avoid recomputation for repeated modes with same args
+        cache = self._schema_cache
+        if mode in cache:
+            return cache[mode]
+
+        allows_tool_calls = self.allows_deferred_tool_calls
         if mode == 'native':
-            return NativeOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
+            schema = NativeOutputSchema(
+                processor=self.processor, allows_deferred_tool_calls=allows_tool_calls
             )
         elif mode == 'prompted':
-            return PromptedOutputSchema(
-                processor=self.processor, allows_deferred_tool_calls=self.allows_deferred_tool_calls
+            schema = PromptedOutputSchema(
+                processor=self.processor, allows_deferred_tool_calls=allows_tool_calls
             )
         elif mode == 'tool':
-            return ToolOutputSchema(toolset=self.toolset, allows_deferred_tool_calls=self.allows_deferred_tool_calls)
+            schema = ToolOutputSchema(toolset=self._toolset, allows_deferred_tool_calls=allows_tool_calls)
         else:
             assert_never(mode)
+
+        cache[mode] = schema
+        return schema
 
     @property
     def toolset(self) -> OutputToolset[Any] | None:
