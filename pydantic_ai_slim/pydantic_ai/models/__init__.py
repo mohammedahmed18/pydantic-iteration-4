@@ -800,6 +800,13 @@ def _customize_tool_def(transformer: type[JsonSchemaTransformer], t: ToolDefinit
 
 
 def _customize_output_object(transformer: type[JsonSchemaTransformer], o: OutputObjectDefinition):
-    schema_transformer = transformer(o.json_schema, strict=True)
+    # Avoid local name lookups where repeated (micro opt), and inline where possible to avoid attr lookups:
+    json_schema = o.json_schema
+    schema_transformer = transformer(json_schema, strict=True)
+    # If walk() is used heavily and returns a deep copy, but a shallow copy suffices, add argument if supported.
+    # Otherwise, this must remain as is.
     son_schema = schema_transformer.walk()
+    # Use dataclasses.replace, but avoid unnecessary work if son_schema is the same (rarely, but check first).
+    if son_schema is json_schema:
+        return o
     return replace(o, json_schema=son_schema)
