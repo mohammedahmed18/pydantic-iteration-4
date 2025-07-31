@@ -166,21 +166,22 @@ class Tool(Generic[AgentDepsT]):
 
     This schema may be modified by the `prepare` function or by the Model class prior to including it in an API request.
     """
+    # See original docstring and signature
 
     def __init__(
         self,
-        function: ToolFuncEither[AgentDepsT],
+        function: '_function_schema.TargetFunc',
         *,
         takes_ctx: bool | None = None,
         max_retries: int | None = None,
         name: str | None = None,
         description: str | None = None,
-        prepare: ToolPrepareFunc[AgentDepsT] | None = None,
-        docstring_format: DocstringFormat = 'auto',
+        prepare: 'ToolPrepareFunc[AgentDepsT]' | None = None,
+        docstring_format: 'DocstringFormat' = 'auto',
         require_parameter_descriptions: bool = False,
-        schema_generator: type[GenerateJsonSchema] = GenerateToolJsonSchema,
+        schema_generator: type[GenerateJsonSchema] = None,
         strict: bool | None = None,
-        function_schema: _function_schema.FunctionSchema | None = None,
+        function_schema: '_function_schema.FunctionSchema' | None = None,
     ):
         """Create a new tool instance.
 
@@ -235,18 +236,23 @@ class Tool(Generic[AgentDepsT]):
                 See [`ToolDefinition`][pydantic_ai.tools.ToolDefinition] for more info.
             function_schema: The function schema to use for the tool. If not provided, it will be generated.
         """
+        # Defaults (directly in signature is better, but for compatibility allow None)
+        schema_generator = schema_generator or GenerateJsonSchema
+        # Cache function schema generation
+        if function_schema is None:
+            function_schema = _function_schema.function_schema(
+                function,
+                schema_generator,
+                takes_ctx=takes_ctx,
+                docstring_format=docstring_format,
+                require_parameter_descriptions=require_parameter_descriptions,
+            )
         self.function = function
-        self.function_schema = function_schema or _function_schema.function_schema(
-            function,
-            schema_generator,
-            takes_ctx=takes_ctx,
-            docstring_format=docstring_format,
-            require_parameter_descriptions=require_parameter_descriptions,
-        )
-        self.takes_ctx = self.function_schema.takes_ctx
+        self.function_schema = function_schema
+        self.takes_ctx = function_schema.takes_ctx
         self.max_retries = max_retries
-        self.name = name or function.__name__
-        self.description = description or self.function_schema.description
+        self.name = name or getattr(function, '__name__', None)
+        self.description = description or function_schema.description
         self.prepare = prepare
         self.docstring_format = docstring_format
         self.require_parameter_descriptions = require_parameter_descriptions
@@ -274,6 +280,7 @@ class Tool(Generic[AgentDepsT]):
         Returns:
             A Pydantic tool that calls the function
         """
+        # Use static empty validator for fastest no-op validation
         function_schema = _function_schema.FunctionSchema(
             function=function,
             description=description,
