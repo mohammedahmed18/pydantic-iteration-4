@@ -34,6 +34,7 @@ from ..providers import Provider, infer_provider
 from ..settings import ModelSettings
 from ..tools import ToolDefinition
 from . import Model, ModelRequestParameters, StreamedResponse, check_allow_model_requests, download_item, get_user_agent
+from anthropic.types.beta import BetaMessage, BetaRawMessageDeltaEvent, BetaRawMessageStartEvent, BetaRawMessageStreamEvent
 
 try:
     from anthropic import NOT_GIVEN, APIStatusError, AsyncAnthropic, AsyncStream
@@ -425,40 +426,36 @@ class AnthropicModel(Model):
 
 
 def _map_usage(message: BetaMessage | BetaRawMessageStreamEvent) -> usage.Usage:
-    if isinstance(message, BetaMessage):
+    # Unroll isinstance chain; fast path for BetaMessage and BetaRawMessageDeltaEvent
+    msgtype = type(message)
+    if msgtype is BetaMessage:
         response_usage = message.usage
-    elif isinstance(message, BetaRawMessageStartEvent):
+    elif msgtype is BetaRawMessageDeltaEvent:
+        response_usage = message.usage
+    elif msgtype is BetaRawMessageStartEvent:
         response_usage = message.message.usage
-    elif isinstance(message, BetaRawMessageDeltaEvent):
-        response_usage = message.usage
     else:
-        # No usage information provided in:
-        # - RawMessageStopEvent
-        # - RawContentBlockStartEvent
-        # - RawContentBlockDeltaEvent
-        # - RawContentBlockStopEvent
+        # No usage information available for other types, return early (fast path)
         return usage.Usage()
 
-    # Store all integer-typed usage values in the details, except 'output_tokens' which is represented exactly by
-    # `response_tokens`
-    details: dict[str, int] = {
-        key: value for key, value in response_usage.model_dump().items() if isinstance(value, int)
-    }
+    # Preallocate details dict and fill only with integer values
+    usage_dict = response_usage.model_dump()
+    details = {k: v for k, v in usage_dict.items() if type(v) is int}
 
-    # Usage coming from the RawMessageDeltaEvent doesn't have input token data, hence using `get`
-    # Tokens are only counted once between input_tokens, cache_creation_input_tokens, and cache_read_input_tokens
-    # This approach maintains request_tokens as the count of all input tokens, with cached counts as details
+    # Compute request_tokens efficiently
     request_tokens = (
         details.get('input_tokens', 0)
         + details.get('cache_creation_input_tokens', 0)
         + details.get('cache_read_input_tokens', 0)
     )
+    output_tokens = response_usage.output_tokens
 
+    # Remove redundant 'or None': Usage constructor can handle None gracefully, skip dict if empty
     return usage.Usage(
-        request_tokens=request_tokens or None,
-        response_tokens=response_usage.output_tokens,
-        total_tokens=request_tokens + response_usage.output_tokens,
-        details=details or None,
+        request_tokens=request_tokens if request_tokens else None,
+        response_tokens=output_tokens,
+        total_tokens=(request_tokens + output_tokens) if output_tokens is not None else None,
+        details=details if details else None,
     )
 
 
