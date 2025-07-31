@@ -647,7 +647,15 @@ class ModelRequest:
     @classmethod
     def user_text_prompt(cls, user_prompt: str, *, instructions: str | None = None) -> ModelRequest:
         """Create a `ModelRequest` with a single user prompt as text."""
-        return cls(parts=[UserPromptPart(user_prompt)], instructions=instructions)
+        # Optimization: Avoid global name lookup for UserPromptPart on each method call
+        # Cache the class-level attribute the first time this method is called.
+        # This avoids repeatedly looking up UserPromptPart in a tight loop.
+        if not hasattr(cls, '_UserPromptPart'):
+            # Deferred import to avoid unnecessary import cost when the method is not called,
+            # and avoids potential circular import issues at module load.
+            from pydantic_ai_slim.pydantic_ai.messages import UserPromptPart
+            cls._UserPromptPart = UserPromptPart
+        return cls(parts=[cls._UserPromptPart(user_prompt)], instructions=instructions)
 
     __repr__ = _utils.dataclasses_no_defaults_repr
 
