@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from mimetypes import guess_type
+from mimetypes import guess_type as _guess_type, guess_type
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, cast, overload
 
 import pydantic
@@ -312,9 +312,17 @@ class DocumentUrl(FileUrl):
 
     def _infer_media_type(self) -> str:
         """Return the media type of the document, based on the url."""
-        type_, _ = guess_type(self.url)
+        url = self.url
+        cached_type = _media_type_cache.get(url)
+        if cached_type is not None:
+            if cached_type is False:  # memoized failure
+                raise ValueError(f'Unknown document file extension: {url}')
+            return cached_type
+        type_, _ = _guess_type(url)
         if type_ is None:
-            raise ValueError(f'Unknown document file extension: {self.url}')
+            _media_type_cache[url] = False
+            raise ValueError(f'Unknown document file extension: {url}')
+        _media_type_cache[url] = type_
         return type_
 
     @property
@@ -1148,3 +1156,5 @@ class FunctionToolResultEvent:
 HandleResponseEvent = Annotated[
     Union[FunctionToolCallEvent, FunctionToolResultEvent], pydantic.Discriminator('event_kind')
 ]
+
+_media_type_cache = {}
