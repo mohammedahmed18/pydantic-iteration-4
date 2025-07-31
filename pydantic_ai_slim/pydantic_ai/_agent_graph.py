@@ -556,16 +556,24 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
 
 def build_run_context(ctx: GraphRunContext[GraphAgentState, GraphAgentDeps[DepsT, Any]]) -> RunContext[DepsT]:
     """Build a `RunContext` object from the current agent graph run context."""
+    # Local variables for repeated attribute access (avoids many slow getattr traversals)
+    deps = ctx.deps
+    state = ctx.state
+
+    # Inline local for instrumentation_settings to avoid repeated attribute traversal
+    instrumentation_settings = deps.instrumentation_settings
+
     return RunContext[DepsT](
-        deps=ctx.deps.user_deps,
-        model=ctx.deps.model,
-        usage=ctx.state.usage,
-        prompt=ctx.deps.prompt,
-        messages=ctx.state.message_history,
-        tracer=ctx.deps.tracer,
-        trace_include_content=ctx.deps.instrumentation_settings is not None
-        and ctx.deps.instrumentation_settings.include_content,
-        run_step=ctx.state.run_step,
+        deps=deps.user_deps,
+        model=deps.model,
+        usage=state.usage,
+        prompt=deps.prompt,
+        messages=state.message_history,
+        tracer=deps.tracer,
+        trace_include_content=(
+            instrumentation_settings is not None and instrumentation_settings.include_content
+        ),
+        run_step=state.run_step,
     )
 
 
