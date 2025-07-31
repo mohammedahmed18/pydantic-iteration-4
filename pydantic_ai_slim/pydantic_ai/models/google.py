@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import FunctionDeclarationDict
 
 try:
     from google import genai
@@ -532,13 +533,12 @@ def _process_response_from_parts(
 
 
 def _function_declaration_from_tool(tool: ToolDefinition) -> FunctionDeclarationDict:
-    json_schema = tool.parameters_json_schema
-    f = FunctionDeclarationDict(
+    # Directly construct and return the FunctionDeclarationDict without intermediate variables for speed and memory
+    return FunctionDeclarationDict(
         name=tool.name,
         description=tool.description or '',
-        parameters=json_schema,  # type: ignore
+        parameters=tool.parameters_json_schema,  # type: ignore
     )
-    return f
 
 
 def _tool_config(function_names: list[str]) -> ToolConfigDict:
