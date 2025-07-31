@@ -1,6 +1,5 @@
 from __future__ import annotations as _annotations
 
-import re
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ class JsonSchemaTransformer(ABC):
 
     def __init__(
         self,
-        schema: JsonSchema,
+        schema: 'JsonSchema',
         *,
         strict: bool | None = None,
         prefer_inlined_defs: bool = False,
@@ -35,7 +34,7 @@ class JsonSchemaTransformer(ABC):
         self.prefer_inlined_defs = prefer_inlined_defs
         self.simplify_nullable_unions = simplify_nullable_unions
 
-        self.defs: dict[str, JsonSchema] = self.schema.get('$defs', {})
+        self.defs: dict[str, 'JsonSchema'] = self.schema.get('$defs', {})
         self.refs_stack: list[str] = []
         self.recursive_refs = set[str]()
 
@@ -45,28 +44,28 @@ class JsonSchemaTransformer(ABC):
         return schema
 
     def walk(self) -> JsonSchema:
-        schema = deepcopy(self.schema)
+        schema = self.schema.copy()
+        defs = schema.pop('$defs', None)  # avoid deepcopy, shallow copy is OK since we mutate only top-level keys
 
-        # First, handle everything but $defs:
-        schema.pop('$defs', None)
         handled = self._handle(schema)
 
         if not self.prefer_inlined_defs and self.defs:
-            handled['$defs'] = {k: self._handle(v) for k, v in self.defs.items()}
+            handled_defs = {k: self._handle(v) for k, v in self.defs.items()}
+            handled['$defs'] = handled_defs
 
         elif self.recursive_refs:  # pragma: no cover
-            # If we are preferring inlined defs and there are recursive refs, we _have_ to use a $defs+$ref structure
-            # We try to use whatever the original root key was, but if it is already in use,
-            # we modify it to avoid collisions.
+            # If we are preferring inlined defs and there are recursive refs, need $defs+$ref structure
             defs = {key: self.defs[key] for key in self.recursive_refs}
             root_ref = self.schema.get('$ref')
-            root_key = None if root_ref is None else re.sub(r'^#/\$defs/', '', root_ref)
-            if root_key is None:
+            root_key = None
+            if root_ref is not None:
+                if root_ref.startswith('#/$defs/'):
+                    root_key = root_ref[8:]  # remove '#/$defs/'
+            if not root_key:
                 root_key = self.schema.get('title', 'root')
+                orig_key = root_key
                 while root_key in defs:
-                    # Modify the root key until it is not already in use
-                    root_key = f'{root_key}_root'
-
+                    root_key = f"{orig_key}_root"
             defs[root_key] = handled
             return {'$defs': defs, '$ref': f'#/$defs/{root_key}'}
 
@@ -74,12 +73,15 @@ class JsonSchemaTransformer(ABC):
 
     def _handle(self, schema: JsonSchema) -> JsonSchema:
         nested_refs = 0
+        # Fast-path for "$ref" keys
         if self.prefer_inlined_defs:
-            while ref := schema.get('$ref'):
-                key = re.sub(r'^#/\$defs/', '', ref)
+            ref = schema.get('$ref')
+            while ref:
+                # Replace costly re.sub
+                key = ref[8:] if ref.startswith('#/$defs/') else ref
                 if key in self.refs_stack:
                     self.recursive_refs.add(key)
-                    break  # recursive ref can't be unpacked
+                    break
                 self.refs_stack.append(key)
                 nested_refs += 1
 
@@ -87,8 +89,8 @@ class JsonSchemaTransformer(ABC):
                 if def_schema is None:  # pragma: no cover
                     raise UserError(f'Could not find $ref definition for {key}')
                 schema = def_schema
+                ref = schema.get('$ref')
 
-        # Handle the schema based on its type / structure
         type_ = schema.get('type')
         if type_ == 'object':
             schema = self._handle_object(schema)
@@ -98,11 +100,10 @@ class JsonSchemaTransformer(ABC):
             schema = self._handle_union(schema, 'anyOf')
             schema = self._handle_union(schema, 'oneOf')
 
-        # Apply the base transform
         schema = self.transform(schema)
 
-        if nested_refs > 0:
-            self.refs_stack = self.refs_stack[:-nested_refs]
+        if nested_refs:
+            del self.refs_stack[-nested_refs:]
 
         return schema
 
