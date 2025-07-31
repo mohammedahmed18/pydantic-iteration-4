@@ -40,6 +40,9 @@ from pydantic_ai.providers import Provider, infer_provider
 from pydantic_ai.providers.bedrock import BedrockModelProfile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
+from botocore.client import BaseClient
+from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
+from mypy_boto3_bedrock_runtime.type_defs import InferenceConfigurationTypeDef
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -367,16 +370,24 @@ class BedrockConverseModel(Model):
     def _map_inference_config(
         model_settings: ModelSettings | None,
     ) -> InferenceConfigurationTypeDef:
-        model_settings = model_settings or {}
+        # Fast-path if model_settings is falsy (None or empty dict)
+        if not model_settings:
+            return {}
+
+        # Avoid repeated .get lookups by storing in local variables (minimal effect but best practice)
         inference_config: InferenceConfigurationTypeDef = {}
 
-        if max_tokens := model_settings.get('max_tokens'):
+        max_tokens = model_settings.get('max_tokens')
+        if max_tokens:
             inference_config['maxTokens'] = max_tokens
-        if (temperature := model_settings.get('temperature')) is not None:
+        temperature = model_settings.get('temperature')
+        if temperature is not None:
             inference_config['temperature'] = temperature
-        if top_p := model_settings.get('top_p'):
+        top_p = model_settings.get('top_p')
+        if top_p:
             inference_config['topP'] = top_p
-        if stop_sequences := model_settings.get('stop_sequences'):
+        stop_sequences = model_settings.get('stop_sequences')
+        if stop_sequences:
             inference_config['stopSequences'] = stop_sequences
 
         return inference_config
