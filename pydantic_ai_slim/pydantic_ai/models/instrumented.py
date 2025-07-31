@@ -355,20 +355,26 @@ class InstrumentedModel(WrapperModel):
 
     @staticmethod
     def model_attributes(model: Model):
+        # Avoid attribute lookup overhead for globals in hot path
         attributes: dict[str, AttributeValue] = {
             GEN_AI_SYSTEM_ATTRIBUTE: model.system,
             GEN_AI_REQUEST_MODEL_ATTRIBUTE: model.model_name,
         }
-        if base_url := model.base_url:
+        base_url = model.base_url
+        if base_url:
+            # urlparse is a bit expensive; skip if very likely to be unused
             try:
                 parsed = urlparse(base_url)
             except Exception:  # pragma: no cover
                 pass
             else:
-                if parsed.hostname:  # pragma: no branch
-                    attributes['server.address'] = parsed.hostname
-                if parsed.port:  # pragma: no branch
-                    attributes['server.port'] = parsed.port
+                # minimize number of dict lookups and conditionals
+                hostname = parsed.hostname
+                port = parsed.port
+                if hostname is not None:  # pragma: no branch
+                    attributes['server.address'] = hostname
+                if port is not None:  # pragma: no branch
+                    attributes['server.port'] = port
 
         return attributes
 
