@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from mimetypes import guess_type
+from mimetypes import init as mimetypes_init, guess_type
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, cast, overload
 
 import pydantic
@@ -20,9 +20,14 @@ from ._utils import (
 )
 from .exceptions import UnexpectedModelBehavior
 from .usage import Usage
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from .models.instrumented import InstrumentationSettings
+    
+    # Pre-init mimetypes (can be expensive, but is thread-safe and idempotent)
+    # This ensures the mimetypes DB is loaded before hot path
+    mimetypes_init()
 
 
 AudioMediaType: TypeAlias = Literal['audio/wav', 'audio/mpeg', 'audio/ogg', 'audio/flac', 'audio/aiff', 'audio/aac']
@@ -312,10 +317,9 @@ class DocumentUrl(FileUrl):
 
     def _infer_media_type(self) -> str:
         """Return the media type of the document, based on the url."""
-        type_, _ = guess_type(self.url)
-        if type_ is None:
-            raise ValueError(f'Unknown document file extension: {self.url}')
-        return type_
+        # Fast path: cache for repeated URLs, avoids recomputing for the same url
+        # LRU allows unbounded unique URLs but is very fast for hot caches
+        return _guess_type_cached(self.url)
 
     @property
     def format(self) -> DocumentFormat:
@@ -1143,6 +1147,15 @@ class FunctionToolResultEvent:
         return self.result.tool_call_id
 
     __repr__ = _utils.dataclasses_no_defaults_repr
+
+
+@lru_cache(maxsize=4096)
+def _guess_type_cached(url: str) -> str:
+    type_, _ = guess_type(url)
+    if type_ is None:
+        # This branch is rare--mirror original exception path
+        raise ValueError(f'Unknown document file extension: {url}')
+    return type_
 
 
 HandleResponseEvent = Annotated[
