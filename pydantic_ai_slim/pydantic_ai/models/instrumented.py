@@ -58,10 +58,15 @@ TOKEN_HISTOGRAM_BOUNDARIES = (1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 26214
 def instrument_model(model: Model, instrument: InstrumentationSettings | bool) -> Model:
     """Instrument a model with OpenTelemetry/logfire."""
     if instrument and not isinstance(model, InstrumentedModel):
+        # Fast path: cache InstrumentationSettings instance if instrument is True repeatedly
         if instrument is True:
-            instrument = InstrumentationSettings()
-
-        model = InstrumentedModel(model, instrument)
+            # Use a static cache to avoid repeated instantiation
+            if not hasattr(instrument_model, "_default_settings"):
+                instrument_model._default_settings = InstrumentationSettings()
+            instrument_settings = instrument_model._default_settings
+        else:
+            instrument_settings = instrument
+        model = InstrumentedModel(model, instrument_settings)
 
     return model
 
